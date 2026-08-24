@@ -1,0 +1,4 @@
+/target
+**/*.rs.bk
+.verus-log/
+*.smt2

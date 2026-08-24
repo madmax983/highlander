@@ -1,0 +1,6 @@
+# Pinned to match Verus's own toolchain pin (verus-lang/verus rust-toolchain.toml).
+# If these drift apart, `cargo build` and `cargo verus verify` stop agreeing on
+# what the crate even means. Bump both together or neither.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

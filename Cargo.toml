@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/highlander-model", "crates/highlander-ref"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/markmasterson/highlander"
+
+[workspace.dependencies]
+# Must match the installed `verus` binary exactly. See scripts/verify.sh, which
+# refuses to run if `verus --version` disagrees with this pin.
+vstd = { version = "=0.0.0-2026-08-23-0033", default-features = false, features = ["alloc"] }
+
+[workspace.lints.rust]
+# Verus sets --cfg verus_keep_ghost / verus_only during verification. Cargo does
+# not know about them, so rustc 1.80+ warns unless they are declared here.
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(verus_keep_ghost)',
+  'cfg(verus_keep_ghost_body)',
+  'cfg(verus_verify_core)',
+  'cfg(verus_only)',
+] }

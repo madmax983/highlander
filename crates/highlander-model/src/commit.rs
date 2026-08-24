@@ -1,0 +1,372 @@
+//! §7.1 — Building an actual commit program, and discharging the theorem's hypotheses.
+//!
+//! [`crate::theorem::crash_consistency`] takes the *shape* of a commit as a
+//! hypothesis: two epochs, payload then seal. This module supplies a real
+//! [`Program`] and proves it has that shape, which is what turns the theorem from a
+//! statement about hypothetical programs into a statement about the one the
+//! protocol emits.
+//!
+//! # The falsifiability gate (§7.3)
+//!
+//! [`barrier_ops`] is the *only* thing the `no-barrier` cargo feature changes: it
+//! emits `[Barrier]` normally and the empty sequence under the feature. That single
+//! line is the difference between two epochs and one.
+//!
+//! Under `no-barrier` the payload and the seal merge into a single epoch, whose
+//! lattice contains the point *"seal landed, payload didn't"* — a state that
+//! recovers to neither `N` nor `N+1`. So [`commit_establishes_shape`] and
+//! [`commit_is_crash_consistent`] **must fail to verify** with the feature on. If
+//! they still verify, the model is vacuous and nothing built on it means anything.
+//!
+//! `scripts/gate.sh` checks exactly that, and checks that the failure names
+//! `commit_is_crash_consistent` — a negative test that passes because the crate
+//! failed to compile is worse than no gate at all.
+
+use vstd::map::{assert_maps_equal, assert_maps_equal_internal};
+use vstd::prelude::*;
+use vstd::seq_lib::{assert_seqs_equal, assert_seqs_equal_internal};
+use vstd::set_lib::{assert_sets_equal, assert_sets_equal_internal};
+
+use crate::algebra::{CellId, Delta, Store};
+#[cfg(verus_only)]
+use crate::algebra::{disjoint, dunion, override_, unit};
+use crate::crash::{Op, Program};
+#[cfg(verus_only)]
+use crate::crash::{denote, epochs, is_crash_outcome, wf};
+use crate::protocol::{CellVal, Geom, Slot};
+#[cfg(verus_only)]
+use crate::protocol::{clean, gen_at, is_slot, live, other, recover, slots_wf};
+#[cfg(verus_only)]
+use crate::theorem::{commit_shape, crash_consistency};
+
+verus! {
+
+broadcast use vstd::map_lib::group_map_properties;
+
+// ---------------------------------------------------------------------------
+// Payloads as key/value sequences
+// ---------------------------------------------------------------------------
+
+/// A payload is an ordered list of writes. Order is irrelevant to the *result*
+/// (that is what §4.3 buys us), but a program is a sequence, so something has to
+/// impose one.
+pub type Payload = Seq<(CellId, CellVal)>;
+
+pub open spec fn write_ops(kvs: Payload) -> Program<CellVal> {
+    kvs.map_values(|kv: (CellId, CellVal)| Op::Write(kv.0, kv.1))
+}
+
+/// The delta a payload assembles to — built with `•`, never `◁`, which is exactly
+/// why [`distinct_keys`] is required everywhere below.
+pub open spec fn kvs_delta(kvs: Payload) -> Delta<CellVal>
+    decreases kvs.len(),
+{
+    if kvs.len() == 0 {
+        unit()
+    } else {
+        dunion(map![kvs[0].0 => kvs[0].1], kvs_delta(kvs.drop_first()))
+    }
+}
+
+pub open spec fn kvs_keys(kvs: Payload) -> Set<CellId>
+    decreases kvs.len(),
+{
+    if kvs.len() == 0 {
+        Set::empty()
+    } else {
+        kvs_keys(kvs.drop_first()).insert(kvs[0].0)
+    }
+}
+
+/// §4.4's condition, stated where it is actually used: `•` is undefined on
+/// overlapping domains, so a payload may not write the same cell twice.
+pub open spec fn distinct_keys(kvs: Payload) -> bool {
+    forall|i: int, j: int| #![auto] 0 <= i < j < kvs.len() ==> kvs[i].0 != kvs[j].0
+}
+
+pub proof fn kvs_keys_contains(kvs: Payload, c: CellId)
+    ensures
+        kvs_keys(kvs).contains(c) <==> exists|i: int| #![auto] 0 <= i < kvs.len() && kvs[i].0 == c,
+    decreases kvs.len(),
+{
+    if kvs.len() == 0 {
+    } else {
+        kvs_keys_contains(kvs.drop_first(), c);
+        if kvs_keys(kvs).contains(c) {
+            if c == kvs[0].0 {
+                assert(kvs[0].0 == c);
+            } else {
+                let i = choose|i: int| #![auto]
+                    0 <= i < kvs.drop_first().len() && kvs.drop_first()[i].0 == c;
+                assert(kvs[i + 1].0 == c);
+            }
+        }
+        if exists|i: int| #![auto] 0 <= i < kvs.len() && kvs[i].0 == c {
+            let i = choose|i: int| #![auto] 0 <= i < kvs.len() && kvs[i].0 == c;
+            if i > 0 {
+                assert(kvs.drop_first()[i - 1].0 == c);
+            }
+        }
+    }
+}
+
+pub proof fn kvs_delta_dom(kvs: Payload)
+    ensures
+        kvs_delta(kvs).dom() =~= kvs_keys(kvs),
+    decreases kvs.len(),
+{
+    if kvs.len() == 0 {
+    } else {
+        kvs_delta_dom(kvs.drop_first());
+        assert_sets_equal!(kvs_delta(kvs).dom(), kvs_keys(kvs));
+    }
+}
+
+pub proof fn distinct_head_fresh(kvs: Payload)
+    requires
+        distinct_keys(kvs),
+        kvs.len() > 0,
+    ensures
+        !kvs_keys(kvs.drop_first()).contains(kvs[0].0),
+        distinct_keys(kvs.drop_first()),
+{
+    kvs_keys_contains(kvs.drop_first(), kvs[0].0);
+    if kvs_keys(kvs.drop_first()).contains(kvs[0].0) {
+        let i = choose|i: int| #![auto]
+            0 <= i < kvs.drop_first().len() && kvs.drop_first()[i].0 == kvs[0].0;
+        assert(kvs[i + 1].0 == kvs[0].0);
+        assert(0 < i + 1 < kvs.len());
+    }
+    assert forall|i: int, j: int| #![auto]
+        0 <= i < j < kvs.drop_first().len() implies kvs.drop_first()[i].0
+        != kvs.drop_first()[j].0 by {
+        assert(kvs[i + 1].0 != kvs[j + 1].0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Epoch decomposition of a payload prefix
+// ---------------------------------------------------------------------------
+
+pub proof fn write_ops_drop_first(kvs: Payload, rest: Program<CellVal>)
+    requires
+        kvs.len() > 0,
+    ensures
+        (write_ops(kvs) + rest)[0] == Op::Write(kvs[0].0, kvs[0].1),
+        (write_ops(kvs) + rest).drop_first() =~= write_ops(kvs.drop_first()) + rest,
+{
+    assert_seqs_equal!((write_ops(kvs) + rest).drop_first(), write_ops(kvs.drop_first()) + rest);
+}
+
+/// The inductive core: prepending a payload's writes folds its delta into epoch 0
+/// of whatever follows, and leaves every later epoch untouched.
+pub proof fn epochs_prepend_writes(kvs: Payload, rest: Program<CellVal>)
+    requires
+        distinct_keys(kvs),
+        kvs_keys(kvs).disjoint(epochs(rest)[0].dom()),
+    ensures
+        epochs(write_ops(kvs) + rest) =~= epochs(rest).update(
+            0,
+            dunion(kvs_delta(kvs), epochs(rest)[0]),
+        ),
+    decreases kvs.len(),
+{
+    crate::crash::epochs_nonempty(rest);
+    if kvs.len() == 0 {
+        assert_seqs_equal!(write_ops(kvs) + rest, rest);
+        assert(kvs_delta(kvs) =~= unit::<CellVal>());
+        crate::algebra::dunion_unit_left(epochs(rest)[0]);
+        assert_seqs_equal!(
+            epochs(rest),
+            epochs(rest).update(0, dunion(kvs_delta(kvs), epochs(rest)[0]))
+        );
+    } else {
+        distinct_head_fresh(kvs);
+        kvs_keys_contains(kvs, kvs[0].0);
+        assert(kvs_keys(kvs.drop_first()).subset_of(kvs_keys(kvs)));
+        epochs_prepend_writes(kvs.drop_first(), rest);
+        write_ops_drop_first(kvs, rest);
+
+        let tail = epochs(write_ops(kvs.drop_first()) + rest);
+        let head = map![kvs[0].0 => kvs[0].1];
+        assert(tail[0] =~= dunion(kvs_delta(kvs.drop_first()), epochs(rest)[0]));
+
+        kvs_delta_dom(kvs.drop_first());
+        crate::algebra::dunion_dom(kvs_delta(kvs.drop_first()), epochs(rest)[0]);
+        crate::algebra::dunion_assoc(head, kvs_delta(kvs.drop_first()), epochs(rest)[0]);
+
+        assert_seqs_equal!(
+            epochs(write_ops(kvs) + rest),
+            epochs(rest).update(0, dunion(kvs_delta(kvs), epochs(rest)[0]))
+        );
+    }
+}
+
+} // verus!
+
+verus! {
+
+// ---------------------------------------------------------------------------
+// §7.1 — The commit program
+// ---------------------------------------------------------------------------
+
+pub open spec fn seal_val(n: nat, crc: u64) -> CellVal {
+    CellVal::Seal { generation: (n + 1) as nat, crc }
+}
+
+/// **The falsifiability gate lives here, and nowhere else.**
+///
+/// This one function is the entire difference between a correct commit and a
+/// broken one. Normally it emits a barrier; under `--features no-barrier` it emits
+/// nothing, the payload and seal collapse into a single epoch, and every proof
+/// downstream of `commit_shape` must break.
+#[cfg(not(feature = "no-barrier"))]
+pub open spec fn barrier_ops() -> Program<CellVal> {
+    seq![Op::Barrier]
+}
+
+#[cfg(feature = "no-barrier")]
+pub open spec fn barrier_ops() -> Program<CellVal> {
+    Seq::empty()
+}
+
+pub open spec fn seal_ops(target: Slot, n: nat, crc: u64) -> Program<CellVal> {
+    seq![Op::Write(target.seal, seal_val(n, crc))]
+}
+
+pub open spec fn commit_tail(target: Slot, n: nat, crc: u64) -> Program<CellVal> {
+    barrier_ops() + seal_ops(target, n, crc)
+}
+
+/// Payload writes, then a barrier (A2), then a single-cell seal (A4).
+pub open spec fn commit_program(kvs: Payload, target: Slot, n: nat, crc: u64) -> Program<CellVal> {
+    write_ops(kvs) + commit_tail(target, n, crc)
+}
+
+/// Epoch decomposition of everything after the payload.
+///
+/// With the barrier this is two epochs — an empty one, then the seal. Without it,
+/// one. That difference is the gate.
+pub proof fn epochs_commit_tail(target: Slot, n: nat, crc: u64)
+    ensures
+        epochs(commit_tail(target, n, crc)).len() == 1 + barrier_ops().len(),
+        epochs(commit_tail(target, n, crc)).last() =~= map![target.seal => seal_val(n, crc)],
+        epochs(commit_tail(target, n, crc))[0].dom().subset_of(
+            map![target.seal => seal_val(n, crc)].dom(),
+        ),
+        // With a barrier the first epoch after the payload is empty. Without one it
+        // is the seal itself — which is the whole point of the gate.
+        barrier_ops().len() > 0 ==> epochs(commit_tail(target, n, crc))[0] =~= unit::<CellVal>(),
+{
+    let sv = seal_val(n, crc);
+    let sops = seal_ops(target, n, crc);
+
+    // epochs of a lone write: one epoch holding just that write.
+    assert(sops.drop_first().len() == 0);
+    assert_seqs_equal!(epochs(sops.drop_first()), seq![unit::<CellVal>()]);
+    crate::algebra::dunion_unit_right(map![target.seal => sv]);
+    assert_seqs_equal!(epochs(sops), seq![map![target.seal => sv]]);
+
+    let tail = commit_tail(target, n, crc);
+    if barrier_ops().len() == 0 {
+        assert_seqs_equal!(tail, sops);
+    } else {
+        assert(tail[0] == Op::Barrier::<CellVal>);
+        assert_seqs_equal!(tail.drop_first(), sops);
+        assert_seqs_equal!(epochs(tail), seq![unit::<CellVal>()].add(epochs(sops)));
+    }
+}
+
+/// The payload's keys never collide with the seal cell, so the prepend lemma
+/// applies in **both** configurations. The gate must fail on the *shape*, not on an
+/// undischargeable side-condition — otherwise it would be testing the wrong thing.
+pub proof fn payload_avoids_seal(g: Geom, kvs: Payload, target: Slot)
+    requires
+        slots_wf(g),
+        is_slot(g, target),
+        kvs_keys(kvs).subset_of(target.payload),
+    ensures
+        !kvs_keys(kvs).contains(target.seal),
+{
+}
+
+/// The commit program really does have the shape [`crash_consistency`] assumes.
+///
+/// **Must fail under `--features no-barrier`**, because `epochs(p).len() == 2`
+/// becomes `1`.
+pub proof fn commit_establishes_shape(
+    g: Geom,
+    s0: Store<CellVal>,
+    kvs: Payload,
+    target: Slot,
+    n: nat,
+    crc: u64,
+)
+    requires
+        slots_wf(g),
+        is_slot(g, target),
+        clean(g, s0),
+        live(g, s0) == Some(other(g, target)),
+        gen_at(s0, other(g, target).seal) == Some(n),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+    ensures
+        commit_shape(g, s0, commit_program(kvs, target, n, crc), target, n, crc),
+        // Pin the payload epoch exactly, so callers can enumerate its lattice.
+        epochs(commit_program(kvs, target, n, crc))[0] =~= kvs_delta(kvs),
+{
+    let sv = seal_val(n, crc);
+    let tail = commit_tail(target, n, crc);
+    let p = commit_program(kvs, target, n, crc);
+
+    epochs_commit_tail(target, n, crc);
+    payload_avoids_seal(g, kvs, target);
+    assert(kvs_keys(kvs).disjoint(epochs(tail)[0].dom()));
+
+    epochs_prepend_writes(kvs, tail);
+    kvs_delta_dom(kvs);
+    crate::algebra::dunion_unit_right(kvs_delta(kvs));
+    crate::crash::epochs_nonempty(tail);
+
+    assert(epochs(p).len() == epochs(tail).len());
+    assert(epochs(p)[0] =~= dunion(kvs_delta(kvs), epochs(tail)[0]));
+    assert(epochs(p)[1] =~= epochs(tail)[1]);
+}
+
+/// **The end-to-end result.**
+///
+/// Given a clean store whose live checkpoint is generation `n`, committing a
+/// payload into the other slot leaves every possible crash outcome recovering to
+/// exactly one of two states: generation `n`, or generation `n + 1`.
+///
+/// This is the statement `scripts/gate.sh` requires to break when the barrier is
+/// removed.
+pub proof fn commit_is_crash_consistent(
+    g: Geom,
+    s0: Store<CellVal>,
+    kvs: Payload,
+    target: Slot,
+    n: nat,
+    crc: u64,
+)
+    requires
+        slots_wf(g),
+        is_slot(g, target),
+        clean(g, s0),
+        live(g, s0) == Some(other(g, target)),
+        gen_at(s0, other(g, target).seal) == Some(n),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+    ensures
+        forall|s2: Store<CellVal>|
+            is_crash_outcome(s0, commit_program(kvs, target, n, crc), s2) ==> recover(g, s2)
+                =~= recover(g, s0) || recover(g, s2) =~= recover(
+                g,
+                denote(s0, commit_program(kvs, target, n, crc)),
+            ),
+{
+    commit_establishes_shape(g, s0, kvs, target, n, crc);
+    crash_consistency(g, s0, commit_program(kvs, target, n, crc), target, n, crc);
+}
+
+} // verus!

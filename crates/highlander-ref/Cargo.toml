@@ -1,0 +1,18 @@
+[package]
+name = "highlander-ref"
+version = "0.1.0"
+description = "Executable reference implementation of the highlander checkpoint protocol, for cross-checking the verified model"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Intentionally no dependency on highlander-model: this crate exists to disagree
+# with it. Sharing code would defeat the purpose.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with the vstd pin in Cargo.toml; scripts/verify.sh enforces it.
+  VERUS_RELEASE: "0.2026.08.23.fbbbbcf"
+
+jobs:
+  # Everything that needs only a stock toolchain.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
+      - run: cargo build --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo fmt --all -- --check
+      # Includes the negative test: without a barrier, the property must be false.
+      - run: cargo test --workspace
+
+  # The proof, and the gate that keeps it honest.
+  verus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Install Verus
+        run: |
+          set -euo pipefail
+          url="https://github.com/verus-lang/verus/releases/download/release%2F${VERUS_RELEASE}/verus-${VERUS_RELEASE}-x86-linux.zip"
+          curl -fsSL -o verus.zip "$url"
+          unzip -q verus.zip
+          echo "$PWD/verus-x86-linux" >> "$GITHUB_PATH"
+      - run: verus --version
+      - name: Verify the proof
+        run: ./scripts/verify.sh
+      # Must FAIL without the barrier, on commit_establishes_shape, as a
+      # postcondition failure. See docs/design/0002-what-was-proven.md §4.
+      - name: Falsifiability gate
+        run: ./scripts/gate.sh
