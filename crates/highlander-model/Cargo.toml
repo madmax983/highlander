@@ -26,6 +26,11 @@ degenerate-recover = []
 # MUST make `cow::mutate_preserves_inv` fail to verify. Never enable this outside
 # scripts/gate.sh.
 no-cow-copy = []
+# The fourth falsifiability gate. Drops the requirement that the register file and
+# memory occupy different cells, so a capture writes both to one cell and loses one
+# of them. This MUST make `machine::capture_restore_roundtrip` fail to verify.
+# Never enable this outside scripts/gate.sh.
+overlapping-layout = []
 
 [package.metadata.verus]
 verify = true

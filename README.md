@@ -42,6 +42,16 @@ shows the result: for any order of the writes by the machine and the reads by th
 checkpoint writer, the stored checkpoint is the memory of the machine at the instant
 the checkpoint started. The machine does not stop.
 
+Rung 3 captures the state of a machine: the registers, the memory and the page
+tables. `machine::capture_restore_roundtrip` shows that the capture loses nothing.
+`checkpoint::a_machine_survives_a_crash` joins rung 1 and rung 3: capture a machine,
+commit it, crash at any point, recover and restore, and the machine that comes back
+is the machine that went in.
+
+A page table is data in cells, thus the capture treats it as data. The capture uses
+physical cells and never translates an address. The other method needs the page
+tables in order to read the page tables, and that circle has no start.
+
 The proof also shows that a commit keeps its data. Crash consistency is a safety
 property: it says that a crash never shows a torn state. A checkpoint that holds
 nothing also obeys that property. Thus `commit::commit_is_durable` states the other
@@ -80,7 +90,8 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `concrete` | §10.1 — a machine of 6 cells, with a test of each lattice point | no |
 | `sequence` | a run of many commits, and the invariant it keeps | no |
 | `cow`      | rung 2 — copy-on-write, and the snapshot it keeps | yes |
-| `checkpoint` | rung 1 and rung 2 together | no |
+| `machine`  | rung 3 — registers, memory, and a capture that loses nothing | no |
+| `checkpoint` | rungs 1, 2 and 3 together | no |
 | `refine`   | §6.3 — the formal position of A1, and its cost | no |
 
 ## How to build
@@ -152,13 +163,14 @@ you change one version, change the other version also.
 A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` runs 3 negative tests. Each one must fail.**
+**`make gate` runs 4 negative tests. Each one must fail.**
 
 | Feature | Lemma that must fail | Property it protects |
 |---|---|---|
 | `no-barrier` | `commit_establishes_shape` | A2 gives 2 epochs, and not 1 |
 | `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
 | `no-cow-copy` | `copy_preserves_visible` | the snapshot holds still |
+| `overlapping-layout` | `capture_preserves_memory_at` | a capture loses nothing |
 
 Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
 crash result is possible: the seal lands, but the payload does not land. This result
@@ -171,6 +183,9 @@ that holds nothing can never tear. Durability rejects it.
 The third gate removes the copy from copy-on-write. The snapshot then follows the
 machine, and a page that the machine writes during a checkpoint enters the
 checkpoint at its new contents. The result mixes 2 instants of the machine.
+
+The fourth gate lets the register file and memory share a cell. One of them writes
+over the other, and the capture loses state with no indication of a fault.
 
 Each gate also tests the cause of the failure. The failure must occur at the named
 lemma, and it must be a postcondition failure and not a compile error. A negative
@@ -189,7 +204,7 @@ if the copy is absent.
 |---|---|---|
 | **1** | verified checkpoint commit and recover, on the abstract cell model | ✅ |
 | **2** | **copy-on-write page records, to prevent a stop of the full machine** | ✅ |
-| 3 | capture of the true machine state (registers, page tables) | — |
+| **3** | **capture of the true machine state (registers, page tables)** | ✅ |
 | 4 | continuation of one simple process after a hard reset | — |
 | 5 | I/O journal at the boundary | — |
 

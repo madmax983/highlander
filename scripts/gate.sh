@@ -71,6 +71,10 @@ gate no-cow-copy copy_preserves_visible \
   "Copy-on-write without the copy. The snapshot follows the machine instead of
    holding still, so the checkpoint mixes two instants of memory."
 
+gate overlapping-layout capture_preserves_memory_at \
+  "A layout where the register file and memory share a cell. One overwrites the
+   other, and the capture loses state without a trace."
+
 echo
 if [ $status -eq 0 ]; then
   echo "all gates passed"

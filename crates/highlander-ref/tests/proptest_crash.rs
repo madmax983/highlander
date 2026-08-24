@@ -475,3 +475,136 @@ fn without_the_copy_the_snapshot_drifts() {
     // layer, arriving instead through the snapshot.
     assert_eq!(bad.out.get(&0), Some(&CellVal::Data(vec![0])));
 }
+
+// ---------------------------------------------------------------------------
+// Rung 3 — capturing the state of a machine
+// ---------------------------------------------------------------------------
+
+use highlander_ref::{Layout, Machine, RegId, capture, restore};
+
+/// Registers in the first two cells of slot B, memory in the rest.
+fn layout() -> Layout {
+    Layout {
+        cell_of: [(0u64, 101u64), (1, 102)].into_iter().collect(),
+        mem_cells: (103..=106).collect(),
+    }
+}
+
+fn machine_at(mem_base: u64, regs: &[u8], mem: &[u8]) -> Machine {
+    Machine {
+        regs: regs
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (i as RegId, vec![*b]))
+            .collect(),
+        mem: mem
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (mem_base + i as u64, CellVal::Data(vec![*b])))
+            .collect(),
+    }
+}
+
+/// A machine laid out for slot B.
+fn machine(regs: &[u8], mem: &[u8]) -> Machine {
+    machine_at(103, regs, mem)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// **The rung 3 theorem, executably: the checkpoint is lossless.**
+    #[test]
+    fn capture_then_restore_is_the_identity(
+        regs in prop::collection::vec(any::<u8>(), 2),
+        mem in prop::collection::vec(any::<u8>(), 4),
+    ) {
+        let lay = layout();
+        prop_assert!(lay.wf());
+        let m = machine(&regs, &mem);
+        prop_assert_eq!(&restore(&lay, &capture(&lay, &m)), &m);
+    }
+
+    /// **Rungs 1 and 3 together: a machine survives a crash.**
+    ///
+    /// Capture a machine, commit it, crash at every point of both lattices, recover
+    /// and restore. Every outcome gives back a whole machine — the one that was
+    /// running before the commit, or the one that was captured. Never a mixture.
+    #[test]
+    fn a_machine_survives_a_crash(
+        regs in prop::collection::vec(any::<u8>(), 2),
+        mem in prop::collection::vec(any::<u8>(), 4),
+    ) {
+        let g = geometry();
+        let lay = layout();
+        let m1 = machine(&regs, &mem);
+
+        // Slot A holds an older machine at generation 7.
+        let m0 = machine_at(3, &[0, 0], &[0, 0, 0, 0]);
+        let lay_a = Layout {
+            cell_of: [(0u64, 1u64), (1, 2)].into_iter().collect(),
+            mem_cells: (3..=6).collect(),
+        };
+        let mut s0 = Store::new();
+        s0.insert(A_SEAL, CellVal::Seal { generation: 7, crc: 0 });
+        for (c, v) in capture(&lay_a, &m0) {
+            s0.insert(c, v);
+        }
+        prop_assert!(clean(&g, &s0));
+
+        let payload: Vec<(u64, Vec<u8>)> = capture(&lay, &m1)
+            .into_iter()
+            .map(|(c, v)| match v {
+                CellVal::Data(w) => (c, w),
+                _ => unreachable!("a capture writes only data"),
+            })
+            .collect();
+        let epochs = commit_epochs(&payload, &g.b, 7, 0, true);
+
+        for (k, epoch) in epochs.iter().enumerate() {
+            let cells: BTreeSet<u64> = epoch.keys().copied().collect();
+            for landed in all_subsets(&cells) {
+                let r = recover(&g, &crash_at(&s0, &epochs, k, &landed));
+                let got_new = restore(&lay, &r);
+                let got_old = restore(&lay_a, &r);
+                prop_assert!(
+                    got_new == m1 || got_old == m0,
+                    "epoch {}, landed {:?} gave neither whole machine",
+                    k,
+                    landed,
+                );
+            }
+        }
+    }
+}
+
+/// **A layout where the register file and memory share a cell.**
+///
+/// The executable form of the fourth gate. One region overwrites the other and the
+/// capture loses state with no indication that anything went wrong.
+#[test]
+fn an_overlapping_layout_loses_state() {
+    let good = layout();
+    assert!(good.wf());
+
+    // Register 1 now lands on a memory cell.
+    let bad = Layout {
+        cell_of: [(0u64, 101u64), (1, 103)].into_iter().collect(),
+        mem_cells: (103..=106).collect(),
+    };
+    assert!(!bad.wf(), "the layout check should reject this");
+
+    let m = machine(&[7, 8], &[1, 2, 3, 4]);
+
+    assert_eq!(
+        restore(&good, &capture(&good, &m)),
+        m,
+        "a sound layout is lossless"
+    );
+
+    let back = restore(&bad, &capture(&bad, &m));
+    assert_ne!(back, m, "an overlapping layout should lose something");
+    // Cell 103 held memory byte 1. The register file wrote over it.
+    assert_eq!(back.mem.get(&103), Some(&CellVal::Data(vec![8])));
+    assert_eq!(m.mem.get(&103), Some(&CellVal::Data(vec![1])));
+}

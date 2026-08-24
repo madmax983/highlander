@@ -261,3 +261,82 @@ impl Cow {
         self.out.insert(p, val);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Rung 3 — capturing the state of a machine
+// ---------------------------------------------------------------------------
+
+pub type RegId = u64;
+
+/// The state that persistence must preserve. Page tables live inside `mem`, like
+/// any other data — capture works on physical cells and never translates an
+/// address.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Machine {
+    pub regs: BTreeMap<RegId, Vec<u8>>,
+    pub mem: Store,
+}
+
+/// Where each part of the machine lives inside a slot.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Layout {
+    pub cell_of: BTreeMap<RegId, CellId>,
+    pub mem_cells: BTreeSet<CellId>,
+}
+
+impl Layout {
+    pub fn reg_cells(&self) -> BTreeSet<CellId> {
+        self.cell_of.values().copied().collect()
+    }
+
+    /// The register file and memory must not share a cell. A layout that overlaps
+    /// loses state without a trace.
+    pub fn wf(&self) -> bool {
+        let regs = self.reg_cells();
+        regs.len() == self.cell_of.len() && regs.is_disjoint(&self.mem_cells)
+    }
+
+    /// Every cell a capture writes.
+    pub fn image(&self) -> BTreeSet<CellId> {
+        self.reg_cells().union(&self.mem_cells).copied().collect()
+    }
+}
+
+/// A machine, as a delta ready for a commit.
+pub fn capture(lay: &Layout, m: &Machine) -> Delta {
+    let mut d = Delta::new();
+    // Memory first, then registers, so an overlapping layout shows the register
+    // file winning — which is the fault the fourth gate is about.
+    for (c, v) in &m.mem {
+        if lay.mem_cells.contains(c) {
+            d.insert(*c, v.clone());
+        }
+    }
+    for (r, c) in &lay.cell_of {
+        let w = m.regs.get(r).cloned().unwrap_or_default();
+        d.insert(*c, CellVal::Data(w));
+    }
+    d
+}
+
+/// A machine, read back out of a store. Reads only the layout's own cells, so the
+/// seal that recovery hands back is invisible.
+pub fn restore(lay: &Layout, d: &Store) -> Machine {
+    let regs = lay
+        .cell_of
+        .iter()
+        .map(|(r, c)| {
+            let w = match d.get(c) {
+                Some(CellVal::Data(w)) => w.clone(),
+                _ => Vec::new(),
+            };
+            (*r, w)
+        })
+        .collect();
+    let mem = d
+        .iter()
+        .filter(|(c, _)| lay.mem_cells.contains(c))
+        .map(|(c, v)| (*c, v.clone()))
+        .collect();
+    Machine { regs, mem }
+}

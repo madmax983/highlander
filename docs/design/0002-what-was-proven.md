@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the rung 1 and rung 2 artifact — 75 verified, 0 errors.
+**Status:** Correct for the rung 1, 2 and 3 artifact — 82 verified, 0 errors.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -102,8 +102,17 @@ There are now 2 gates:
 | `no-barrier` | `commit_establishes_shape` | A2 gives 2 epochs, and not 1 |
 | `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
 | `no-cow-copy` | `copy_preserves_visible` | the snapshot holds still |
+| `overlapping-layout` | `capture_preserves_memory_at` | a capture loses nothing |
 
-§5b describes the second gate, and §10 describes the third gate.
+§5b describes the second gate, §10 the third, and §11 the fourth.
+
+**A note on the target of a gate.** Gates 3 and 4 first pointed at a lemma with a
+long proof. Verus then reported a failure at an assertion inside the proof, and the
+output did not give the name of the lemma, thus `gate.sh` rejected the result as a
+failure for the wrong reason. The correction was to state the property as a lemma
+with an **empty proof body**: `copy_preserves_visible` and
+`capture_preserves_memory_at`. Verus proves each of them without a hint, thus the
+postcondition is what fails. A gate needs a target of this shape.
 
 Note also that well-formedness (`wf`) holds without the barrier. A payload with
 distinct keys, and a seal outside the payload region, is a legal program. The
@@ -394,3 +403,63 @@ makes the same statement in `without_the_copy_the_snapshot_drifts`.
   release, but it does not state a bound.
 - Any statement about time. There is no proof that the checkpoint finishes, or that
   the pause is short. A schedule in which the writer never operates obeys each lemma.
+
+---
+
+## 11. Rung 3: the state of a real machine
+
+Rungs 1 and 2 move cells and never ask what a cell means. Rung 3 asks. The object
+that persists is a machine, with registers and page tables, and the checkpoint must
+hold all of it. If the capture loses anything, rung 4 cannot resume, and each result
+below rung 3 describes a checkpoint of nothing in particular.
+
+`machine::capture_restore_roundtrip` is the theorem: capture and then restore is the
+identity on machines. The checkpoint is **lossless**.
+
+### Page tables are ordinary memory
+
+A page table is data in cells, thus `capture` treats it as data. This is a decision,
+and not an omission. `capture` uses **physical** cells and never translates an
+address. The other method is a capture of virtual memory, and it needs the page
+tables in order to read the page tables. That circle has no start.
+`page_tables_are_ordinary_memory` records the result.
+
+### The mechanism boundary
+
+§8 of the design doc records a boundary at the outside of the machine: the world
+does not go back to an earlier state. There is a second boundary at the inside, and
+the design doc does not record it.
+
+The checkpoint machinery is part of the machine. Its seal cells, and the registers
+of its writer, are state. If the capture holds them, then the capture must describe
+itself, and that regress has no start. Thus the capture does not hold them:
+
+| Lemma | Statement |
+|---|---|
+| `capture_excludes_the_mechanism` | a capture never writes a cell of the machinery |
+| `restore_ignores_the_mechanism` | a restore reads the cells of its layout, and no other cell |
+
+The second lemma is what makes the boundary safe. Recovery returns a slot that holds
+a seal, and `restore` does not see it.
+
+**Persistence is orthogonal for the machine, and not for the mechanism.** The
+mechanism does not return from the checkpoint. A resume derives it again from the
+seal. This is the same class of problem as §8, on the other side of the machine.
+
+### The condition of `•`, for the fourth time
+
+§4.4 states that the definedness condition of `•` occurs 3 times. Rung 3 adds a
+fourth: the register file and memory must not share a cell. `capture` uses `•` to
+join them, and the condition is not decoration. The `overlapping-layout` gate removes
+the condition, and then one region writes over the other and the capture loses state
+with no indication of a fault.
+
+### What rung 3 does not contain
+
+- Any specific hardware. There is no x86, no ARM, no MMU and no trap handler. A
+  register is a name for a byte string, and a cell is a name for a byte string.
+- A resume. Rung 3 shows that a machine survives a crash as **data**. It does not
+  start that machine again. Rung 4 covers that.
+- The registers of the checkpoint writer itself. See the mechanism boundary above.
+- Any statement about the order of the capture. `capture` is one function of the
+  machine state, thus it describes one instant. Rung 2 gives that instant.

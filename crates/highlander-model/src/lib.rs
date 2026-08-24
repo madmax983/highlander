@@ -9,6 +9,7 @@ pub mod commit;
 pub mod concrete;
 pub mod cow;
 pub mod crash;
+pub mod machine;
 pub mod protocol;
 pub mod refine;
 pub mod sequence;

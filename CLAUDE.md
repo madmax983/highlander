@@ -98,7 +98,7 @@ Read the text again and check three things:
 
 ## Proof work
 
-Five invariants hold this development together. Do not break one of them without a
+Six invariants hold this development together. Do not break one of them without a
 record of the change.
 
 - **`algebra::dunion_comm` must fail to verify if you remove its `disjoint`
@@ -115,6 +115,9 @@ record of the change.
   must occur at `copy_preserves_visible`. The copy is the whole of copy-on-write. If
   the snapshot follows the machine, the checkpoint holds 2 instants of memory. See
   `docs/design/0002` §10.
+- **`scripts/gate.sh` must also fail with `--features overlapping-layout`.** The
+  failure must occur at `capture_preserves_memory_at`. The register file and memory
+  must not share a cell. See `docs/design/0002` §11.
 - **Do not put `clean` back into a commit precondition.** `clean` holds only for a
   new store. A commit leaves the older checkpoint in the other slot, thus a store is
   never clean again. Use `protocol::steady`. See `docs/design/0002` §5a.
