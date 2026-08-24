@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the rung 1, 2 and 3 artifact — 82 verified, 0 errors.
+**Status:** Correct for the rung 1, 2 and 3 artifact — 83 verified, 0 errors.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -445,6 +445,37 @@ a seal, and `restore` does not see it.
 **Persistence is orthogonal for the machine, and not for the mechanism.** The
 mechanism does not return from the checkpoint. A resume derives it again from the
 seal. This is the same class of problem as §8, on the other side of the machine.
+
+### The boundary is forced, and not a convention
+
+`no_layout_captures_itself` shows that a capture always reaches outside the memory
+it captures, for each machine with at least 1 register. Thus the boundary is a
+result, and not a decision.
+
+The obstruction is arithmetic, and it is not logic. A container of a fixed size
+cannot hold a faithful copy of itself **and** anything else.
+`capture_restore_roundtrip` states that the copy is faithful. Thus a proof of
+losslessness removes the possibility of total self-inclusion. The 2 properties are
+not compatible, and the artifact proves the first one.
+
+This is the form of Russell's paradox, and it is not the form of Gödel's theorem.
+There is no statement that the system can express and cannot decide. There is a
+count, and the count does not permit the arrangement.
+
+### Why the regress stops
+
+The machinery has state, and a resume does not lose it. The state has 2 parts, and
+each part has a different answer:
+
+| Part | Answer |
+|---|---|
+| the 2 seal cells | they persist, outside the image of the machine |
+| the progress of the writer during a checkpoint | a resume discards it, and the next checkpoint does the work again |
+
+The second row is the reason rung 1 uses 2 slots. A checkpoint that stops in the
+middle has no seal, thus recovery ignores it (§7.2). The machinery does not need to
+record its own progress, because a partial checkpoint costs only the work, and it
+costs no correctness.
 
 ### The condition of `•`, for the fourth time
 

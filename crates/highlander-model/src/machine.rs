@@ -249,6 +249,31 @@ pub proof fn capture_excludes_the_mechanism(lay: Layout, m: Machine, g: Geom)
     capture_dom(lay, m);
 }
 
+/// **No layout can put the capture inside the memory it captures.**
+///
+/// The boundary is not a convention. Suppose the capture landed entirely within the
+/// cells it is capturing. The register file is part of the capture, and a register
+/// cell is not a memory cell, so the capture reaches outside the memory — always,
+/// for any machine with at least one register.
+///
+/// The obstruction is arithmetic, and not logic. A container of a fixed size cannot
+/// hold a faithful copy of itself **and** anything else, and
+/// `capture_restore_roundtrip` is exactly the statement that the copy is faithful.
+/// Losslessness and total self-inclusion are not compatible, thus proving the first
+/// removes the second.
+pub proof fn no_layout_captures_itself(lay: Layout, m: Machine, r: RegId)
+    requires
+        machine_fits(lay, m),
+        lay.cell_of.dom().contains(r),
+    ensures
+        !image(lay).subset_of(lay.mem_cells),
+{
+    let c = lay.cell_of[r];
+    assert(lay.reg_of.dom().contains(c));
+    assert(image(lay).contains(c));
+    assert(!lay.mem_cells.contains(c));
+}
+
 /// A restore reads only the layout's cells, so whatever the machinery leaves in the
 /// store is invisible to it. This is what lets recovery hand back a slot that
 /// contains a seal.
