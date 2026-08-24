@@ -116,6 +116,7 @@ pub proof fn a_machine_survives_a_crash(
             let restored = restore(lay, recover(g, denote(s0, commit_program(kvs, target, n, crc))));
             &&& restored.regs =~= m0.regs
             &&& restored.mem =~= m0.mem
+            &&& restored == m0
         }),
 {
     let r = recover(g, denote(s0, commit_program(kvs, target, n, crc)));

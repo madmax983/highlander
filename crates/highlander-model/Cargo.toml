@@ -31,6 +31,11 @@ no-cow-copy = []
 # of them. This MUST make `machine::capture_restore_roundtrip` fail to verify.
 # Never enable this outside scripts/gate.sh.
 overlapping-layout = []
+# The fifth falsifiability gate. Drops the requirement that a replay receives the
+# inputs it received before the crash. This MUST make
+# `process::replay_follows_the_same_trajectory` fail to verify. Never enable this
+# outside scripts/gate.sh.
+ignore-input-journal = []
 
 [package.metadata.verus]
 verify = true

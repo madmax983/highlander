@@ -91,6 +91,7 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `sequence` | a run of many commits, and the invariant it keeps | no |
 | `cow`      | rung 2 — copy-on-write, and the snapshot it keeps | yes |
 | `machine`  | rung 3 — registers, memory, and a capture that loses nothing | no |
+| `process`  | rung 4 — a resume, and what the world sees across a crash | no |
 | `checkpoint` | rungs 1, 2 and 3 together | no |
 | `refine`   | §6.3 — the formal position of A1, and its cost | no |
 
@@ -163,7 +164,7 @@ you change one version, change the other version also.
 A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` runs 4 negative tests. Each one must fail.**
+**`make gate` runs 5 negative tests. Each one must fail.**
 
 | Feature | Lemma that must fail | Property it protects |
 |---|---|---|
@@ -171,6 +172,7 @@ gates prevent this condition.
 | `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
 | `no-cow-copy` | `copy_preserves_visible` | the snapshot holds still |
 | `overlapping-layout` | `capture_preserves_memory_at` | a capture loses nothing |
+| `ignore-input-journal` | `replay_follows_the_same_trajectory` | a replay needs its inputs |
 
 Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
 crash result is possible: the seal lands, but the payload does not land. This result
@@ -205,10 +207,20 @@ if the copy is absent.
 | **1** | verified checkpoint commit and recover, on the abstract cell model | ✅ |
 | **2** | **copy-on-write page records, to prevent a stop of the full machine** | ✅ |
 | **3** | **capture of the true machine state (registers, page tables)** | ✅ |
-| 4 | continuation of one simple process after a hard reset | — |
+| **4** | **continuation of one simple process after a hard reset** | ✅ |
 | 5 | I/O journal at the boundary | — |
 
 Rungs 2 to 5 are optional. You can use rung 1 alone.
+
+Rung 4 starts the machine again. `process::replay_follows_the_same_trajectory`
+shows that a crash costs work and changes nothing else: given the same inputs, the
+machine passes through the states it passed through before. A step takes a machine
+**and an input**, thus the model shows that a replay needs the inputs that arrived
+before. That is the obligation of rung 5.
+
+`process::a_crash_repeats_the_events_since_the_checkpoint` states §8 exactly. A
+crash does not disturb the world at random. The world receives one specific sequence
+a second time: the events that the machine emitted after its last checkpoint.
 
 **Known limitation:** the external world does not go back to an earlier state. The
 machine makes a checkpoint at generation N+1, then the machine crashes, then the

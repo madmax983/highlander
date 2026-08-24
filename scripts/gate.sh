@@ -75,6 +75,10 @@ gate overlapping-layout capture_preserves_memory_at \
   "A layout where the register file and memory share a cell. One overwrites the
    other, and the capture loses state without a trace."
 
+gate ignore-input-journal replay_follows_the_same_trajectory \
+  "A replay that is not given the inputs it had before. The machine follows a
+   different trajectory, so the resumed process is not the one that crashed."
+
 echo
 if [ $status -eq 0 ]; then
   echo "all gates passed"
