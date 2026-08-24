@@ -1,4 +1,4 @@
-# ADR 0001 — Ping-pong slots, not an append-only log
+# ADR 0001 — Two checkpoint slots, and not an append-only log
 
 **Status:** Accepted
 **Date:** 2026-08-24
@@ -6,60 +6,64 @@
 
 ## Context
 
-Rung 1 needs a commit protocol whose crash behaviour can be proven. Two candidates:
+Rung 1 needs a commit protocol with crash behaviour that a proof can examine. There
+are two candidates.
 
-**Append-only log.** Records are appended; recovery replays to the last complete
-record. The crash model is as simple as it gets:
+**An append-only log.** The kernel adds each record to the end of the log. Recovery
+reads the log again, up to the last complete record. The crash model is very simple:
 
 ```
 crash(log, n) = log.take(n)
 ```
 
-No epochs, no barriers, nothing to reorder. A crash truncates, and truncation is
-always a valid prefix.
+There are no epochs, no barriers and no writes that change order. A crash makes the
+log shorter, and a shorter log is always correct.
 
-**Ping-pong slots.** Two fixed checkpoint slots. Write the payload into the idle
-slot, barrier, then atomically write a single seal cell naming the new generation.
-Recovery reads whichever seal is newer. The crash model needs epochs, a barrier
-axiom, and an arbitrary-subset landing model.
+**Two checkpoint slots.** There are two slots at fixed positions. The kernel writes
+the payload into the slot that is not live. Then the kernel does a barrier. Then the
+kernel writes one seal cell with the new generation number. Recovery reads the seal
+with the larger generation number. This crash model needs epochs, a barrier axiom
+and a model in which an arbitrary subset of the writes lands.
 
 ## Decision
 
-Ping-pong.
+Use two checkpoint slots.
 
-## Rationale
+## Reasons
 
-The log's simplicity is real but temporary. Storage is bounded, so a log requires
-compaction — and **compaction is an atomic switchover between two states, which is
-ping-pong**. The hard problem arrives either way. The log merely defers it until
-there is a working system that must then be retrofitted, at the point where the
-retrofit is most expensive and least visible.
+The simplicity of the log is real, but it is temporary. Storage is not infinite,
+thus a log needs compaction. **Compaction is an atomic change from one state to
+another state, which is what two slots do.** The difficult problem arrives in both
+designs. The log only delays the problem. The delay puts the problem after a system
+that operates, and then a person must change that system. That change is most
+expensive at that time, and it is also most difficult to see.
 
-Build the hard part first, while it is the only part.
+Do the difficult part first, when it is the only part.
 
-A second reason, specific to this project: the log's crash model is *too* simple to
-be worth verifying. `crash(log, n) = log.take(n)` is a one-line lemma. It would
-produce a proof artifact that demonstrates nothing about the technique, and the
-whole premise of rung 1 (design doc §1.1) is that the checkpoint layer is where
-protection derives from proof rather than from hardware.
+There is a second reason, and it is specific to this project. The crash model of the
+log is too simple to give value to a proof. `crash(log, n) = log.take(n)` is a lemma
+of one line. A proof of it shows nothing about the method. But §1.1 of the design doc
+states the purpose of rung 1: at the checkpoint layer, a proof gives protection, and
+the hardware does not.
 
-## Consequences
+## Results
 
-**Accepted:** a substantially harder crash model — `2ⁿ` landing schedules per epoch
-rather than `n + 1` prefixes; an explicit barrier axiom (A2); an explicit
-single-cell atomicity axiom (A1); and the requirement that the seal fit in exactly
-one cell (A4).
+**Accepted:** a crash model that is much more difficult. There are 2^n schedules for
+the writes of one epoch, and not n + 1 shorter logs. The model needs an explicit
+barrier axiom (A2), an explicit axiom for the atomicity of one cell (A1), and a
+condition that the seal is in one cell only (A4).
 
-**Gained:** the axioms are now *named and few*. `crates/highlander-model` reduces
-machine-wide crash consistency to A1, A2 and A4, with the CRC quarantined outside
-the proven core as a probabilistic backstop (§5.1). That reduction is the deliverable.
+**Received:** the axioms now have names, and there are few of them.
+`crates/highlander-model` reduces the crash consistency of a full machine to A1, A2
+and A4. The CRC stays outside the proof as a probabilistic test (§5.1). This
+reduction is the deliverable.
 
-**Measured:** the reference implementation's property tests report that without the
-barrier, **63 of 128** landing schedules corrupt the store. The barrier is not a
-performance tuning knob.
+**Measured:** the property tests of the reference implementation show that 63 of 128
+schedules cause damage to the store if the barrier is absent. The barrier is not a
+control for performance.
 
-## Notes
+## Note
 
-The falsifiability gate (`scripts/gate.sh`) exists because of this decision. A crash
-model this elaborate can be wrong in a way that still verifies; removing the barrier
-must break the proof, or the model is describing nothing.
+This decision is the reason for the falsifiability gate (`scripts/gate.sh`). A crash
+model of this size can be wrong and can still pass verification. If you remove the
+barrier, the proof must fail. If the proof does not fail, the model shows nothing.

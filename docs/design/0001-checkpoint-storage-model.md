@@ -1,102 +1,102 @@
 # Design Doc: Checkpoint Storage Model
 
 **Project:** highlander — an orthogonally persistent kernel
-**Scope of this doc:** The storage model, its axioms, and the crash-consistency theorem — rung 1 of the ladder.
-**Status:** Model locked. **Proof complete** — see `docs/design/0002-what-was-proven.md` for the delta between this document and the artifact.
+**Scope of this doc:** the storage model, its axioms and the crash consistency theorem — rung 1 of the ladder.
+**Status:** Model locked. **Proof complete** — see `docs/design/0002-what-was-proven.md` for the differences between this document and the artifact.
 **Author:** Mark
 
 ---
 
 ## 1. Thesis
 
-An orthogonally persistent kernel checkpoints the *entire machine state* — every process, every register, every page — to stable storage as an atomic transaction. There is no filesystem, no `save`, no serialization step. A crash resumes mid-instruction rather than rebooting.
+An orthogonally persistent kernel writes the *full state of the machine* to stable storage as one atomic transaction. The full state includes each process, each register and each page. There is no file system, no save command and no serialization step. After a crash, the machine continues from the middle of an instruction. It does not do a reboot.
 
-Persistence stops being something a process *does* and becomes a property of *existing*.
+A process does no work to be persistent. A process is persistent because it exists.
 
-Lineage: KeyKOS (ran production banking workloads), EROS. Deliberately **not** the Phil Opp / x86-paging path — that route derives protection from hardware (MMU, rings, page tables), which is largely unreachable by formal proof. Here, protection and consistency derive from *proof*, which makes Verus load-bearing rather than decorative.
+Related work: KeyKOS and EROS. KeyKOS operated production banking workloads. This project does not use the x86 paging method of Phil Opp. That method gets protection from the hardware: the MMU, the rings and the page tables. A formal proof cannot easily examine that hardware. In this project the proof gives protection and consistency. Thus Verus does necessary work, and it is not decoration.
 
-### 1.1 Why the storage model comes first
+### 1.1 Why the storage model is first
 
-Everything above the checkpoint layer is meaningless if the checkpoint can tear. The crash-consistency theorem is the foundational lemma of the entire system, and it is the one piece that is:
+A checkpoint tears if it holds a mixture of the old data and the new data. If a checkpoint can tear, each layer above the checkpoint layer has no value. The crash consistency theorem is the first lemma of the full system, and it is the one part that is:
 
-- self-contained (no hardware required — the model is abstract),
-- finishable (a weekend or two, not a quarter),
-- and reusable regardless of whether rungs 2–5 ever get built.
+- complete in itself (the model is abstract, thus it needs no hardware),
+- possible to finish (1 or 2 weekends of work, and not 3 months),
+- and of value even if no person builds rungs 2 to 5.
 
-If the project stops after this doc's deliverable, the artifact still stands on its own as a verified append-only/checkpoint journal.
+If the project stops after this deliverable, the artifact still has value. It is a verified checkpoint journal.
 
-### 1.2 Non-goals for this document
+### 1.2 Out of scope for this document
 
-- Executor, scheduler, process model
-- Page tables, COW tracking, incremental checkpointing
-- Device drivers, I/O journaling (see §8 — acknowledged, deferred)
-- Any concrete hardware target
+- The executor, the scheduler and the process model
+- Page tables, COW records and incremental checkpoints
+- Device drivers and the I/O journal (see §8 — recorded, and delayed)
+- Any specific hardware
 
 ---
 
-## 2. The frame: an OS-level WAL
+## 2. The frame: a write-ahead log for an operating system
 
-The design is recognizably write-ahead logging applied to a whole machine. The discipline — *intent lands durably before the state it describes* — is exactly the barrier-then-seal ordering below.
+This design applies the write-ahead log method to a full machine. The rule is the same: the intent lands in durable storage before the state that the intent describes. The order of the barrier and the seal below obeys this rule.
 
-Four differences from a database WAL are worth stating, because they drive the design:
+There are 4 differences from the write-ahead log of a database. Each difference has an effect on the design:
 
-| | Database WAL | Persistent kernel |
+| | Database write-ahead log | Persistent kernel |
 |---|---|---|
-| **What's logged** | A curated semantic delta (tuple changed) | Physical page images — the kernel has dirty pages and no idea what they mean |
-| **Transaction boundary** | The application declares commit | None. Checkpoints fire on a timer at an arbitrary instruction |
-| **I/O** | The DB owns everything inside its walls | The kernel doesn't own the NIC, the UART, or the DMA target (§8) |
-| **What's underneath** | A filesystem, which can catch mistakes | Nothing. This *is* the bottom layer |
+| **Content of the log** | a selected semantic delta (a tuple changed) | images of physical pages — the kernel has dirty pages and no knowledge of their meaning |
+| **Transaction boundary** | the application declares a commit | none. Checkpoints occur on a timer, at an arbitrary instruction |
+| **I/O** | the database owns everything inside its own walls | the kernel does not own the NIC, the UART or the DMA target (§8) |
+| **Layer below** | a file system, which can correct some errors | nothing. This *is* the lowest layer |
 
-The last row is why §7's read-only-recovery rule is non-negotiable rather than a nicety.
+The last row is the reason for the read-only rule for recovery in §7. That rule is necessary, and it is not an improvement.
 
 ---
 
 ## 3. Storage model
 
-### 3.1 Cells, not sectors
+### 3.1 Cells, and not sectors
 
-The theorem needs exactly three things from storage:
+The theorem needs 3 things from storage, and no more:
 
-1. a collection of independently replaceable **cells**,
+1. a collection of **cells** that a write can replace one at a time,
 2. **atomic replacement of one cell**,
 3. a **fence**.
 
-It does not need bytes, block sizes, or addresses. So the model is abstract over the value type:
+The theorem needs no bytes, no block sizes and no addresses. Thus the model is abstract in the type of the value:
 
 ```rust
 pub struct Store<V> { cells: Map<CellId, V> }
 ```
 
-"Cell" is therefore a *parameter*, instantiable as a 512B block, a NAND page, an IndexedDB key, an S3 object, or a battery-backed RAM word. This is not an aspirational portability goal — it simply falls out of not over-specifying.
+Thus a cell is a parameter. A cell can be a block of 512 bytes, a NAND page, an IndexedDB key, an S3 object or a word of battery-backed RAM. This is not a goal for portability. It is a result of a model that states no more than it needs.
 
-> **Risk — vacuity.** If cells are atomic *by construction*, the model has assumed away A1 (§5), the one interesting axiom. Mitigation in §6.3: the abstract layer must keep the torn write *available*, and A1 must be discharged in a refinement layer, not defined out of existence.
+> **Risk — an empty model.** If the construction of the model makes each cell atomic, then the model assumes A1 (§5). A1 is the one axiom with content. §6.3 gives the correction: the abstract layer must keep the torn write available, and a refinement layer must discharge A1. A definition must not remove A1.
 
 ### 3.2 Deltas
 
-A **delta** is a partial map `δ : CellId ⇀ V`. Stores and deltas share a carrier, which is what makes the algebra work.
+A **delta** is a partial map `δ : CellId ⇀ V`. A store and a delta have the same carrier, and this is the reason that the algebra operates.
 
 ---
 
 ## 4. The algebra
 
-Two monoids over the same carrier. This is the core of the design.
+There are 2 monoids on the same carrier. This is the centre of the design.
 
-### 4.1 Sequencing — override (`◁`)
+### 4.1 Sequence — override (`◁`)
 
-Right wins:
+The right operand wins:
 
 ```
 (s ◁ δ)(c) = δ(c)   if c ∈ dom δ
              s(c)   otherwise
 ```
 
-`(Deltas, ◁, ∅)` is a monoid: total, associative, **non-commutative**.
+`(Deltas, ◁, ∅)` is a monoid. It is total and associative, but it is **not commutative**.
 
 ### 4.2 Separation — disjoint union (`•`)
 
-Defined **only when** `dom δ₁ ∩ dom δ₂ = ∅`.
+`•` is defined **only if** `dom δ₁ ∩ dom δ₂ = ∅`.
 
-`(Deltas, •, ∅)` is a **partial commutative monoid** — associative, commutative, cancellative, unital. This is a separation algebra; `⊕` from separation logic arrives without being invited.
+`(Deltas, •, ∅)` is a **partial commutative monoid**. It is associative, commutative, cancellative and unital. It is a separation algebra. The `⊕` operator of separation logic occurs here, although the design did not plan for it.
 
 ### 4.3 The bridge lemma
 
@@ -104,36 +104,36 @@ Defined **only when** `dom δ₁ ∩ dom δ₂ = ∅`.
 disjoint(δ₁, δ₂)  ⟹  δ₁ ◁ δ₂ = δ₁ • δ₂
 ```
 
-**Sequencing collapses into separation exactly when order stops mattering.** Everything downstream leans on this. If it fights during proof, the definitions are wrong — fix them before proceeding.
+**A sequence becomes a separation if the order has no effect.** Each result below uses this lemma. If the lemma is difficult to prove, then the definitions are wrong. Correct the definitions before you continue.
 
-### 4.4 What the algebra retroactively explains
+### 4.4 What the algebra explains
 
-The well-formedness condition "*no two writes to the same cell within one epoch*" is not an implementation detail. It is the **definedness side-condition of `•`**, and it is what licenses modeling within-epoch landing as unordered. It shows up three times in this design (§4.2, §6.1, §7.2) — a good sign the algebra is carrying weight rather than decorating.
+The condition "*no 2 writes in 1 epoch touch the same cell*" is not a detail of the implementation. It is the **condition for the definition of `•`**, and it lets the model treat the writes in 1 epoch as unordered. This condition occurs 3 times in this design (§4.2, §6.1 and §7.2). This shows that the algebra does necessary work, and that it is not decoration.
 
 ---
 
 ## 5. Axioms
 
-Stated explicitly, because the entire value of the result is that it reduces machine-wide crash consistency to a small set of *named* hardware promises.
+This section states each axiom, because the value of the result is a reduction. It reduces the crash consistency of a full machine to a small set of hardware promises that have **names**.
 
-| ID | Statement | Nature | Where it's false |
+| ID | Statement | Type | Where it is false |
 |---|---|---|---|
-| **A1** | A single cell write lands entirely or not at all | Hardware promise | Raw NAND — a partial program leaves some bits cleared |
-| **A2** | All writes issued before a barrier land before any issued after | Hardware promise | Consumer SSDs with volatile write caches have lied about this for decades |
-| **A3** | The generation counter never wraps | Free at 64 bits — stated anyway | — |
-| **A4** | The seal fits in exactly one cell | Design constraint | If the seal spans cells, A1 buys nothing and the argument collapses |
+| **A1** | A write to one cell lands fully, or the write does not land | hardware promise | raw NAND: a partial program operation leaves some bits at 0 |
+| **A2** | All writes before a barrier land before all writes after the barrier | hardware promise | for many years, consumer SSDs with volatile write caches did not obey this rule |
+| **A3** | The generation counter never wraps | free with 64 bits, but stated | — |
+| **A4** | The seal is in one cell only | design condition | if the seal uses more than 1 cell, A1 gives nothing and the argument fails |
 
-### 5.1 The CRC is not what makes this work
+### 5.1 The CRC is not the reason this design operates
 
-Under **A1 + A2 alone**, ping-pong is already correct with no checksum: payload writes → barrier → single atomic seal write. If the new seal is present, its payload necessarily completed.
+With A1 and A2 only, the protocol of 2 slots is correct without a checksum: the payload writes, then the barrier, then one atomic write of the seal. If the new seal is present, then its payload is complete.
 
-The CRC's role is precisely: **defense-in-depth against A1 and A2 being false.** Its guarantee is *probabilistic* — a torn cell can accidentally validate. This is not provable in Verus and must not be presented as if it were. It enters as an assumption with a stated collision probability, explicitly quarantined from the proven core.
+The task of the CRC is different. It gives more protection if A1 or A2 is false. Its guarantee is *probabilistic*, because a torn cell can pass the check by chance. Verus cannot prove this property. Do not show it as a proven result. The CRC enters as an assumption with a stated probability of collision, and it stays outside the proof.
 
-### 5.2 The shape of the result
+### 5.2 The form of the result
 
-> Crash consistency of the whole machine reduces to two stated hardware promises, with a probabilistic backstop for when they are broken.
+> The crash consistency of a full machine reduces to 2 hardware promises, with a probabilistic test for the condition in which the hardware breaks them.
 
-Nearly every real system depends on exactly this. Almost none write it down.
+Almost all real systems depend on this reduction. Almost no real system records it.
 
 ---
 
@@ -141,54 +141,56 @@ Nearly every real system depends on exactly this. Almost none write it down.
 
 ### 6.1 Programs and epochs
 
-A commit is a *program*; a crash is a *landing schedule*.
+A commit is a *program*. A crash is a *schedule for the writes*.
 
 ```rust
 pub enum Op { Write(CellId, V), Barrier }
 pub type Program = Seq<Op>;
 ```
 
-An **epoch** is the set of writes between two barriers, assembled by `•` — therefore order-free by construction. A program is epochs sequenced by `◁`:
+An **epoch** is the set of writes between 2 barriers. `•` assembles an epoch, thus an epoch has no order. `◁` sequences the epochs into a program:
 
 ```
 p = e₁ ◁ e₂ ◁ … ◁ eₙ
 ```
 
-**Precondition (from §4.4):** within any single epoch, no two writes target the same cell.
+**Condition (from §4.4):** in one epoch, no 2 writes touch the same cell.
 
 ### 6.2 The crash lattice
 
-A crash in epoch *k* yields:
+A crash in epoch *k* gives:
 
 ```
 Crash_k(p) = { e₁ ◁ … ◁ e_{k-1} ◁ σ  |  σ ⊑ e_k }
 ```
 
-where `σ ⊑ e` means σ is a restriction of e to a subset of its domain.
+`σ ⊑ e` means that σ is a restriction of e to a subset of its domain.
 
-**`⊑` makes the sub-deltas of an epoch a Boolean lattice**, isomorphic to `𝒫(dom e_k)`: top is "everything landed," bottom is "nothing landed," `2^|dom e_k|` points total.
+**`⊑` makes the sub-deltas of an epoch a Boolean lattice.** That lattice is isomorphic to `𝒫(dom e_k)`. The top point is "all writes landed", the bottom point is "no write landed", and there are `2^|dom e_k|` points.
 
-So the arbitrary-subset crash model is not a nuisance quantifier. It is: *recovery is evaluated over a Boolean lattice of size 2ⁿ.*
+Thus the model with an arbitrary subset is not an unwanted quantifier. It is this statement: *recovery operates on a Boolean lattice of 2ⁿ points.*
 
-> **Why arbitrary subset, and not in-order?** Real devices reorder freely between barriers. Assuming in-order landing proves something true of a machine nobody owns, and is exactly how "worked in testing" checkpoint code corrupts itself in the field.
+> **Why an arbitrary subset, and not an order?** Real devices change the order of the writes between barriers. A proof that assumes an order gives a result about a machine that no person has. This is how checkpoint code that passes its tests causes damage in operation.
 
-### 6.3 Where A1 lives formally
+### 6.3 The formal position of A1
 
-Prove the theorem over abstract cells, then in a **refinement layer** instantiate `V = Seq<u8>` with a `tear()` relation, and show that **A1 is exactly the assumption that `tear` is trivial.**
+Prove the theorem for abstract cells. Then, in a **refinement layer**, use `V = Seq<u8>` with a `tear()` relation. Then show that **A1 is exactly the assumption that `tear` is trivial.**
 
-This gives A1 a formal home instead of a prose comment, and it is the mitigation for the vacuity risk flagged in §3.1.
+This gives A1 a formal position, and not a comment in the text. It is also the correction for the risk of an empty model in §3.1.
 
 ---
 
 ## 7. Commit protocol and the theorem
 
-### 7.1 Ping-pong
+**Note on scope.** This section describes 1 commit. A machine does many commits, and the state after a commit does not obey the conditions of this section. `docs/design/0002-what-was-proven.md` §5a describes the correction and the proof for a full run.
 
-**Decision: ping-pong slots, not an append-only log.** See `docs/adr/0001-ping-pong-vs-log.md`.
+### 7.1 Two checkpoint slots
 
-An append-only log has a strictly simpler crash model — `crash(log, n) = log.take(n)`, no epochs, no barriers, nothing to reorder. But bounded storage requires compaction, and **compaction is an atomic switchover between two states — which is ping-pong.** The problem arrives either way; the log merely defers it behind a working system that will then have to be retrofitted. Build the hard part first, while it is the only part.
+**Decision: two checkpoint slots, and not an append-only log.** See `docs/adr/0001-ping-pong-vs-log.md`.
 
-Two checkpoint slots. Each sealed with a generation number and a CRC. Commit is two epochs:
+An append-only log has a much simpler crash model: `crash(log, n) = log.take(n)`, with no epochs, no barriers and no change of order. But storage is not infinite, thus a log needs compaction. **Compaction is an atomic change from one state to another state, which is what 2 slots do.** The difficult problem arrives in both designs. The log only delays the problem, and the delay puts it after a system that operates. A person must then change that system. Do the difficult part first, when it is the only part.
+
+There are 2 checkpoint slots. A generation number and a CRC seal each slot. A commit is 2 epochs:
 
 ```
 p = e_payload ◁ e_seal        where |dom e_seal| = 1
@@ -200,19 +202,19 @@ sequenceDiagram
     participant S as Stable store
     Note over K,S: live slot = A (gen N)
     K->>S: write payload cells → slot B
-    Note right of S: epoch 1 — lattice size 2^n<br/>crash here → seal absent → recover = N
+    Note right of S: epoch 1 — lattice of 2^n points<br/>a crash here leaves no seal → recover to N
     K->>S: BARRIER (A2)
     K->>S: write seal(gen N+1) → 1 cell
-    Note right of S: epoch 2 — lattice size 2 (A1, A4)<br/>crash here → recover ∈ {N, N+1}
+    Note right of S: epoch 2 — lattice of 2 points (A1, A4)<br/>a crash here → recover to N or N+1
     Note over K,S: live slot = B (gen N+1)
 ```
 
-### 7.2 Why it is correct, in one line
+### 7.2 Why the protocol is correct, in one line
 
-**The seal epoch's lattice has two points, ⊥ and ⊤.** That is the entire argument. A1 is precisely the claim that this lattice is 2 and not `2^bytes`.
+**The lattice of the seal epoch has 2 points, ⊥ and ⊤.** That is the full argument. A1 is the statement that this lattice has 2 points, and not `2^bytes` points.
 
-- **Crash in payload** → seal absent → recovery reads only the live slot. All `2ⁿ` points collapse to a **single point**, state N — because `dom e_payload` is disjoint from the live slot's footprint (the `•` condition again).
-- **Crash in seal** → two points → `{N, N+1}`.
+- **A crash in the payload epoch** leaves no seal. Thus recovery reads the live slot only. All `2ⁿ` points become a **single point**, which is state N. The reason is that `dom e_payload` is disjoint from the footprint of the live slot (the condition for `•` again).
+- **A crash in the seal epoch** gives 2 points, which are `{N, N+1}`.
 
 ### 7.3 The theorem
 
@@ -220,22 +222,22 @@ sequenceDiagram
 |image(recover ∘ Crash(p))| ≤ 2
 ```
 
-**Falsifiability check — it must fail for the right reason.** Drop the barrier: payload and seal merge into one epoch whose lattice contains the point *"seal landed, payload didn't,"* which recovers to a state that is neither N nor N+1. If the proof still verifies with the barrier removed, the model is vacuous and must be fixed before anything is built on it.
+**Falsifiability test — the proof must fail for the correct reason.** Remove the barrier. The payload and the seal then become 1 epoch, and the lattice of that epoch holds the point *"the seal landed, the payload did not land"*. That point recovers to a state that is not N and not N+1. If the proof still passes after you remove the barrier, then the model is empty. Correct the model before you build anything on it.
 
 ### 7.4 Checkpoint policy
 
-**Decision: checkpoint frequency is configurable, not fixed.** Correctness must not depend on the interval — the theorem in §7.3 quantifies over *any* interruption point, so a policy change can only trade durability lag against throughput, never consistency. This is worth asserting as a property: *the crash-consistency theorem is invariant under checkpoint policy.*
+**Decision: the checkpoint frequency is configurable, and not fixed.** Correctness must not depend on the interval. The theorem in §7.3 covers *each* point of interruption. Thus a change of the policy can only exchange durability lag for throughput. It cannot change consistency. State this result as a property: *a change of the checkpoint policy has no effect on the crash consistency theorem.*
 
-Two notes on what this decision does **not** settle:
+There are 2 notes on the parts that this decision does **not** settle.
 
-**Trigger unit: instruction count.** Determinism is a hard requirement — a checkpoint that fires at a reproducible point makes resume reproducible, which is what makes rung 4 testable at all. Wall-clock and dirty-cell count are both execution-dependent and are rejected as the primary trigger for that reason. Two caveats that must not be glossed:
+**Trigger unit: a count of instructions.** Determinism is a hard requirement. A checkpoint at a repeatable point makes the continuation repeatable, and that property makes rung 4 possible to test. A wall clock and a count of dirty cells both depend on the execution, thus this design rejects both as the primary trigger. There are 2 more notes, and this document must not hide them:
 
-- *Simulated determinism does not transfer to hardware.* Callgrind is deterministic because it is a simulator. Hardware instruction counters are not — interrupts, SMM, speculation, and page-fault accounting all perturb retired-instruction counts run to run. The `rr` project hit exactly this and settled on **retired conditional branches plus the program counter as a tiebreak**, having found raw instruction counts unreliable on real silicon. Whatever counter is chosen here needs the same scrutiny; assume the PMU lies until measured.
-- *A deterministic trigger does not give a deterministic execution.* Firing at instruction N is reproducible only if the instruction stream itself is, and a kernel's stream depends on interrupt timing. Reproducible resume therefore also requires the interrupt schedule to be journaled — the same boundary problem as §8. The trigger unit is the easy half.
+- *Determinism in a simulator does not transfer to hardware.* Callgrind is deterministic because Callgrind is a simulator. The instruction counters of real hardware are not deterministic. Interrupts, SMM, speculation and the accounting of page faults all change the count of retired instructions between runs. The `rr` project met this problem. It selected **the count of retired conditional branches, with the program counter to break a tie**, because raw counts of instructions were not reliable on real silicon. Examine any counter for this project in the same way. Do not trust the PMU until you measure it.
+- *A deterministic trigger does not give a deterministic execution.* A trigger at instruction N is repeatable only if the stream of instructions is also repeatable. The stream of a kernel depends on the times of its interrupts. Thus a repeatable continuation also needs a journal of the interrupt schedule. This is the same boundary problem as §8. The trigger unit is the simple part of the problem.
 
-Because correctness is policy-invariant (above), the policy can reasonably be an enum: instruction count for deterministic test and replay modes, wall-clock or dirty-cell count in production where reproducibility is not the goal. Nothing about that choice can affect the theorem.
+Correctness does not depend on the policy (see above). Thus the policy can be an enum: a count of instructions for deterministic test and replay modes, and a wall clock or a count of dirty cells in production, where a repeatable run is not the goal. That choice cannot change the theorem.
 
-**Rung 2 is still required.** A configurable stop-the-world is still a stop-the-world; tuning the interval only moves the pause around. COW page tracking is what removes it. Configurability makes the pause *tolerable* during rungs 1–4, not absent.
+**Rung 2 is still necessary.** A stop of the full machine is still a stop, even if the interval is configurable. A change to the interval only moves the pause. COW page records remove the pause. A configurable interval makes the pause acceptable during rungs 1 to 4. It does not remove the pause.
 
 ### 7.5 Recovery is a closure operator
 
@@ -243,68 +245,68 @@ Because correctness is policy-invariant (above), the policy can reasonably be an
 recover ∘ recover = recover
 ```
 
-Its fixed points are the clean stores, so recovery is a retraction `Store ↠ Clean`.
+Its fixed points are the clean stores. Thus recovery is a retraction `Store ↠ Clean`.
 
-Two rules follow, both non-negotiable given §2's "nothing underneath" row:
+There are 2 rules, and the "nothing below" row of §2 makes both rules necessary:
 
-1. **Read-only until committed to a slot.** Power can fail *during recovery*; a recovery that writes before deciding can destroy the only valid checkpoint. "`recover` restricted to `Clean` is the identity" is the formal statement of this.
-2. **Never write the slot whose seal is currently live.** Formally `δ # live_footprint` — the definedness of `•`, third appearance. This is what makes ping-pong genuinely two-slot rather than one-slot-with-extra-steps.
+1. **Read only, until the kernel commits to a slot.** Power can fail *during recovery*. A recovery that writes before it decides can destroy the only valid checkpoint. The formal statement is: "`recover` restricted to `Clean` is the identity".
+2. **Never write the slot with the live seal.** The formal statement is `δ # live_footprint`, which is the condition for the definition of `•` for the third time. This rule makes the design a true design of 2 slots, and not a design of 1 slot with more steps.
 
 ---
 
 ## 8. Known limitation: the I/O boundary
 
-**The outside world does not roll back.** Checkpoint at N+1, crash, resume from N — but the packet was sent, the UART byte went out, the DMA landed.
+**The external world does not go back to an earlier state.** The machine makes a checkpoint at N+1, then the machine crashes, then the machine continues from N. But the network packet went out, the UART byte went out and the DMA transfer completed.
 
-Orthogonal persistence is only truly orthogonal *inside* the machine. Every I/O boundary needs journaling and idempotency. KeyKOS handled this; it is the least-discussed part of the design.
+Orthogonal persistence is fully orthogonal only inside the machine. Each I/O boundary needs a journal and idempotency. KeyKOS did this work. Few designs discuss this part.
 
-Note this is structurally identical to activity idempotency in a durable workflow engine — a solved problem one layer up (see `autumn-harvest`).
+This problem has the same structure as the idempotency of an activity in a durable workflow engine, which is a solved problem one layer above (see `autumn-harvest`).
 
-Out of scope for rung 1. Flagged here so it is not discovered late.
+This problem is out of scope for rung 1. This document records it. Then no person finds it late.
 
 ---
 
-## 9. Milestone ladder
+## 9. The ladder
 
 | Rung | Deliverable | Status |
 |---|---|---|
-| **1** | **Verified checkpoint commit/recover over the abstract cell model** | **✅ complete** |
-| 2 | COW page tracking so a checkpoint doesn't stop the world | — |
-| 3 | Capture real machine state (registers, page tables) into a checkpoint | — |
-| 4 | Resume a single trivial process across a hard reset | — |
-| 5 | I/O journaling at the boundary (§8) | — |
+| **1** | **verified checkpoint commit and recover, on the abstract cell model** | **✅ complete** |
+| 2 | COW page records, to prevent a stop of the full machine at a checkpoint | — |
+| 3 | capture of the true machine state (registers, page tables) into a checkpoint | — |
+| 4 | continuation of 1 simple process after a hard reset | — |
+| 5 | an I/O journal at the boundary (§8) | — |
 
-Rung 1 is complete and useful in isolation. Rungs 2–5 are explicitly optional.
+Rung 1 is complete and has value alone. Rungs 2 to 5 are optional.
 
 ---
 
 ## 10. Proof plan (rung 1)
 
-Spine first — each step gates the next:
+Do the spine first. Each step is a condition for the next step:
 
-1. `Delta = Map<CellId, V>`; `override(δ₁, δ₂)`; `disjoint_union(δ₁, δ₂)` with its definedness side-condition.
-2. Monoid laws for both. Non-commutativity of `◁` as an explicit counterexample, not a lemma.
-3. **The bridge lemma (§4.3).** Everything leans on this. If it resists, the definitions are wrong.
-4. `sub_delta(σ, e)` and the crash-outcome set.
+1. `Delta = Map<CellId, V>`, then `override(δ₁, δ₂)`, then `disjoint_union(δ₁, δ₂)` with the condition for its definition.
+2. The monoid laws for both operators. Give an explicit counterexample for the non-commutativity of `◁`. Do not state it as a lemma.
+3. **The bridge lemma (§4.3).** Each result below uses it. If it is difficult to prove, then the definitions are wrong.
+4. `sub_delta(σ, e)` and the set of crash results.
 5. The theorem (§7.3).
 
 ### 10.1 Acceptance gates
 
-- [x] **Negative case:** remove the barrier; the proof must *fail*. (§7.3) — `scripts/gate.sh`
-- [x] **Concrete instantiation:** two cells, one seal, hand-check a crash at every lattice point — confirm the algebra describes a machine and not just itself. — `concrete.rs`
-- [x] Property tests (proptest) against a reference implementation, complementing the proof. — `crates/highlander-ref`
-- [x] A1's refinement layer (§6.3) exists, or is explicitly deferred with a note. — `refine.rs`
+- [x] **Negative test:** remove the barrier, and the proof must *fail*. (§7.3) — `scripts/gate.sh`
+- [x] **Concrete instantiation:** 2 cells and 1 seal. Examine a crash at each lattice point by hand. This shows that the algebra describes a machine, and not only itself. — `concrete.rs`
+- [x] Property tests (proptest) against a reference implementation, to complement the proof. — `crates/highlander-ref`
+- [x] The refinement layer for A1 (§6.3) exists, or a note records its delay. — `refine.rs`
 
 ---
 
 ## 11. Open questions
 
-1. **Which hardware counter** backs the instruction-count trigger on each target — and whether it survives the `rr` critique. See §7.4.
-2. **Generation counter placement** — inside the seal cell (assumed here) or separate?
-3. **TTM angle.** `Store` is a relation `{CellId, V}` keyed on `CellId`, and `◁` is relational override: `s ◁ δ = (s WHERE id ∉ δ[id]) ∪ δ`. The key constraint *is* functionality, so "δ is a well-formed epoch" and "δ is a valid relation value" are the same statement. If the relational-kernel thesis is to be more than an aesthetic, this is where it becomes literal — the storage layer is already a relvar and commit is already relational assignment. Worth a follow-up doc; out of scope here.
+1. **Which hardware counter** supports the trigger for the count of instructions on each target? Does that counter survive the criticism from `rr`? See §7.4.
+2. **The position of the generation counter.** Is it inside the seal cell (as this document assumes), or is it separate?
+3. **The TTM view.** `Store` is a relation `{CellId, V}` with the key `CellId`, and `◁` is relational override: `s ◁ δ = (s WHERE id ∉ δ[id]) ∪ δ`. The key constraint *is* functionality. Thus "δ is a well-formed epoch" and "δ is a valid relation value" are the same statement. If the thesis of a relational kernel is more than an aesthetic, this is the position where it becomes literal: the storage layer is already a relvar, and a commit is already a relational assignment. This needs a separate document, and it is out of scope here.
 
 ---
 
 ## Appendix A: Provenance
 
-This design emerged from a chat exploring `no_std` project ideas — starting from a durable workflow engine, passing through wasm/browser durability, and landing on orthogonal persistence as the generalization: *every process is a durable workflow, for free, without a workflow engine.*
+This design came from a chat about ideas for a `no_std` project. The chat started with a durable workflow engine, then moved through durability in wasm and the browser, then arrived at orthogonal persistence as the generalization: *each process is a durable workflow, at no cost, and without a workflow engine.*
