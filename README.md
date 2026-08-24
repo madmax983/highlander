@@ -92,6 +92,7 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `cow`      | rung 2 — copy-on-write, and the snapshot it keeps | yes |
 | `machine`  | rung 3 — registers, memory, and a capture that loses nothing | no |
 | `process`  | rung 4 — a resume, and what the world sees across a crash | no |
+| `io`       | rung 5 — the I/O boundary, and how it absorbs a repeat | no |
 | `checkpoint` | rungs 1, 2 and 3 together | no |
 | `refine`   | §6.3 — the formal position of A1, and its cost | no |
 
@@ -164,7 +165,7 @@ you change one version, change the other version also.
 A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` runs 5 negative tests. Each one must fail.**
+**`make gate` runs 6 negative tests. Each one must fail.**
 
 | Feature | Lemma that must fail | Property it protects |
 |---|---|---|
@@ -173,6 +174,7 @@ gates prevent this condition.
 | `no-cow-copy` | `copy_preserves_visible` | the snapshot holds still |
 | `overlapping-layout` | `capture_preserves_memory_at` | a capture loses nothing |
 | `ignore-input-journal` | `replay_follows_the_same_trajectory` | a replay needs its inputs |
+| `no-output-dedup` | `a_stale_event_is_dropped` | the boundary absorbs a repeat |
 
 Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
 crash result is possible: the seal lands, but the payload does not land. This result
@@ -208,9 +210,9 @@ if the copy is absent.
 | **2** | **copy-on-write page records, to prevent a stop of the full machine** | ✅ |
 | **3** | **capture of the true machine state (registers, page tables)** | ✅ |
 | **4** | **continuation of one simple process after a hard reset** | ✅ |
-| 5 | I/O journal at the boundary | — |
+| **5** | **I/O journal at the boundary** | ✅ |
 
-Rungs 2 to 5 are optional. You can use rung 1 alone.
+Each rung has value alone.
 
 Rung 4 starts the machine again. `process::replay_follows_the_same_trajectory`
 shows that a crash costs work and changes nothing else: given the same inputs, the
@@ -222,11 +224,21 @@ before. That is the obligation of rung 5.
 crash does not disturb the world at random. The world receives one specific sequence
 a second time: the events that the machine emitted after its last checkpoint.
 
-**Known limitation:** the external world does not go back to an earlier state. The
-machine makes a checkpoint at generation N+1, then the machine crashes, then the
-machine starts again at generation N. But the network packet went out, and the DMA
-transfer completed. Orthogonal persistence is fully orthogonal only inside the
-machine. See §8 of the design doc.
+Rung 5 closes the boundary. The external world does not go back to an earlier
+state: the machine checkpoints at N+1, crashes, starts again at N, but the packet
+went out and the DMA transfer completed. Rung 4 shows the world receives one
+specific sequence a second time, and rung 5 removes it.
+
+* **Output.** Each event carries a tag that increases. The boundary keeps the
+  largest tag it accepted, and drops each event at or below it.
+  `io::a_repeated_window_is_delivered_once` shows the world receives the same
+  effects, with a crash or without one. A TCP sequence number does this, and so does
+  an idempotency key in a durable workflow engine.
+* **Input.** An input arrives from outside, thus the capture does not hold it. A
+  journal records the inputs since the last checkpoint, and a replay reads them.
+  `io::a_sound_journal_discharges_same_inputs` connects the journal to the condition
+  that rung 4 needs. The journal is cells, thus rung 1 makes it crash consistent
+  with no new mechanism and no new axiom.
 
 ## Background
 

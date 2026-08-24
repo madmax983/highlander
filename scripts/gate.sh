@@ -79,6 +79,10 @@ gate ignore-input-journal replay_follows_the_same_trajectory \
   "A replay that is not given the inputs it had before. The machine follows a
    different trajectory, so the resumed process is not the one that crashed."
 
+gate no-output-dedup a_stale_event_is_dropped \
+  "An I/O boundary that accepts everything. The window repeated after a crash
+   reaches the world a second time, so §8 is unbounded again."
+
 echo
 if [ $status -eq 0 ]; then
   echo "all gates passed"

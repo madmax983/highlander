@@ -274,9 +274,9 @@ This problem is out of scope for rung 1. This document records it. Then no perso
 | **2** | **COW page records, to prevent a stop of the full machine at a checkpoint** | **✅ complete** |
 | **3** | **capture of the true machine state (registers, page tables) into a checkpoint** | **✅ complete** |
 | **4** | **continuation of 1 simple process after a hard reset** | **✅ complete** |
-| 5 | an I/O journal at the boundary (§8) | — |
+| **5** | **an I/O journal at the boundary (§8)** | **✅ complete** |
 
-Rungs 1 to 4 are complete. Each rung has value alone. Rung 5 is optional.
+Every rung is complete. Each rung has value alone.
 
 ---
 

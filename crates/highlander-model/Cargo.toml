@@ -36,6 +36,11 @@ overlapping-layout = []
 # `process::replay_follows_the_same_trajectory` fail to verify. Never enable this
 # outside scripts/gate.sh.
 ignore-input-journal = []
+# The sixth falsifiability gate. Makes the I/O boundary accept every event, so the
+# window repeated after a crash reaches the world twice. This MUST make
+# `io::a_repeated_window_is_delivered_once` fail to verify. Never enable this
+# outside scripts/gate.sh.
+no-output-dedup = []
 
 [package.metadata.verus]
 verify = true
