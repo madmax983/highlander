@@ -4,8 +4,10 @@
 extern crate alloc;
 
 pub mod algebra;
+pub mod checkpoint;
 pub mod commit;
 pub mod concrete;
+pub mod cow;
 pub mod crash;
 pub mod protocol;
 pub mod refine;

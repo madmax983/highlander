@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use highlander_ref::{
-    CellVal, Geom, Slot, Store, clean, commit_epochs, crash_at, denote, gen_at, live, recover,
+    CellVal, Cow, Geom, Slot, Store, clean, commit_epochs, crash_at, denote, gen_at, live, recover,
 };
 use proptest::prelude::*;
 
@@ -379,4 +379,99 @@ fn without_a_barrier_the_property_is_false() {
         "without a barrier, {bad} of {} landing schedules corrupt the store",
         1 << cells.len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Rung 2 — copy-on-write
+// ---------------------------------------------------------------------------
+
+/// One step of either party. A checkpoint is any interleaving of these.
+#[derive(Clone, Debug)]
+enum CowOp {
+    Mutate(u64, u8),
+    Flush(u64),
+}
+
+fn run_cow(mem0: &Store, ops: &[CowOp], with_copy: bool) -> Cow {
+    let mut c = Cow::start(mem0);
+    for op in ops {
+        match op {
+            CowOp::Mutate(p, b) => c.mutate(*p, CellVal::Data(vec![*b]), with_copy),
+            CowOp::Flush(p) => c.flush(*p),
+        }
+    }
+    // The writer finishes its sweep.
+    let pages: Vec<u64> = mem0.keys().copied().collect();
+    for p in pages {
+        c.flush(p);
+    }
+    c
+}
+
+fn memory(bytes: &[u8]) -> Store {
+    bytes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (i as u64, CellVal::Data(vec![*b])))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// **The rung 2 theorem, executably.**
+    ///
+    /// The machine writes whatever it likes, in any order, while the checkpoint
+    /// writer collects pages. When the writer has swept every page, what it
+    /// collected is the memory exactly as it was when the checkpoint began.
+    #[test]
+    fn a_concurrent_snapshot_is_exact(
+        bytes in prop::collection::vec(any::<u8>(), 1..8),
+        ops in prop::collection::vec(0usize..64, 0..40),
+    ) {
+        let mem0 = memory(&bytes);
+        let pages: Vec<u64> = mem0.keys().copied().collect();
+
+        // Turn the raw numbers into a schedule over real pages.
+        let schedule: Vec<CowOp> = ops
+            .iter()
+            .map(|n| {
+                let p = pages[n % pages.len()];
+                if n % 2 == 0 { CowOp::Mutate(p, (n % 251) as u8) } else { CowOp::Flush(p) }
+            })
+            .collect();
+
+        let c = run_cow(&mem0, &schedule, true);
+        prop_assert_eq!(&c.out, &mem0, "the snapshot drifted from the start state");
+    }
+}
+
+/// **Copy-on-write without the copy: the executable form of the third gate.**
+///
+/// Remove the copy and the snapshot follows the machine instead of holding still. A
+/// page written after the checkpoint begins, and collected afterwards, enters the
+/// checkpoint at its *new* contents. The result mixes two instants of the machine.
+#[test]
+fn without_the_copy_the_snapshot_drifts() {
+    let mem0 = memory(&[0, 0, 0, 0]);
+
+    // Write page 2, then collect it. With the copy, the checkpoint gets the old
+    // contents. Without it, the checkpoint gets the new contents.
+    let schedule = vec![CowOp::Mutate(2, 99), CowOp::Flush(2)];
+
+    let good = run_cow(&mem0, &schedule, true);
+    assert_eq!(good.out, mem0, "with the copy, the snapshot holds still");
+
+    let bad = run_cow(&mem0, &schedule, false);
+    assert_ne!(bad.out, mem0, "without the copy, the snapshot should drift");
+    assert_eq!(
+        bad.out.get(&2),
+        Some(&CellVal::Data(vec![99])),
+        "the checkpoint took the value written after it began",
+    );
+
+    // Every other page is untouched, so the checkpoint is a mixture of two instants
+    // of the machine — which is exactly the tear rung 1 prevents at the storage
+    // layer, arriving instead through the snapshot.
+    assert_eq!(bad.out.get(&0), Some(&CellVal::Data(vec![0])));
 }

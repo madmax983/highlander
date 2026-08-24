@@ -194,3 +194,70 @@ pub fn crash_at(s0: &Store, epochs: &[Delta], k: usize, landed: &BTreeSet<CellId
         .collect();
     override_(&s, &sigma)
 }
+
+// ---------------------------------------------------------------------------
+// Rung 2 — copy-on-write
+// ---------------------------------------------------------------------------
+
+/// A checkpoint that is in progress while the machine keeps running.
+///
+/// The whole design is one operator: the snapshot is `mem ◁ saved`, where `saved`
+/// holds the contents a page had when the checkpoint began. `◁` gives the right
+/// operand priority, so a page that has been written reads at its old contents.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Cow {
+    /// What the machine reads and writes now.
+    pub mem: Store,
+    /// Contents copied aside, for pages written since the checkpoint began and not
+    /// yet collected.
+    pub saved: Delta,
+    /// Pages already collected, at their start-of-checkpoint contents.
+    pub out: Delta,
+}
+
+impl Cow {
+    pub fn start(mem0: &Store) -> Cow {
+        Cow {
+            mem: mem0.clone(),
+            saved: Delta::new(),
+            out: Delta::new(),
+        }
+    }
+
+    /// The snapshot the checkpoint writer sees.
+    pub fn visible(&self) -> Store {
+        override_(&self.mem, &self.saved)
+    }
+
+    /// The machine writes a page.
+    ///
+    /// `with_copy == false` models the third falsifiability gate: copy-on-write
+    /// without the copy. The snapshot then follows the machine rather than holding
+    /// still, and the checkpoint mixes two instants of memory.
+    ///
+    /// Never blocks. There is no condition on the progress of the checkpoint.
+    pub fn mutate(&mut self, p: CellId, v: CellVal, with_copy: bool) {
+        let needs_copy = with_copy && !self.out.contains_key(&p) && !self.saved.contains_key(&p);
+        if let Some(old) = self.mem.get(&p).cloned().filter(|_| needs_copy) {
+            self.saved.insert(p, old);
+        }
+        self.mem.insert(p, v);
+    }
+
+    /// The checkpoint writer collects a page.
+    ///
+    /// Releases the copy, which is what bounds the memory cost of a checkpoint: at
+    /// most one copy per page, and only until the writer arrives. A second call for
+    /// the same page does nothing, because by then the copy is gone and a re-read
+    /// would take the current contents.
+    ///
+    /// Never blocks either.
+    pub fn flush(&mut self, p: CellId) {
+        if self.out.contains_key(&p) || !self.mem.contains_key(&p) {
+            return;
+        }
+        let val = self.visible().get(&p).cloned().expect("page is in mem");
+        self.saved.remove(&p);
+        self.out.insert(p, val);
+    }
+}

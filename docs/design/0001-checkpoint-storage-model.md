@@ -271,12 +271,12 @@ This problem is out of scope for rung 1. This document records it. Then no perso
 | Rung | Deliverable | Status |
 |---|---|---|
 | **1** | **verified checkpoint commit and recover, on the abstract cell model** | **✅ complete** |
-| 2 | COW page records, to prevent a stop of the full machine at a checkpoint | — |
+| **2** | **COW page records, to prevent a stop of the full machine at a checkpoint** | **✅ complete** |
 | 3 | capture of the true machine state (registers, page tables) into a checkpoint | — |
 | 4 | continuation of 1 simple process after a hard reset | — |
 | 5 | an I/O journal at the boundary (§8) | — |
 
-Rung 1 is complete and has value alone. Rungs 2 to 5 are optional.
+Rung 1 and rung 2 are complete. Each rung has value alone. Rungs 3 to 5 are optional.
 
 ---
 

@@ -67,6 +67,10 @@ gate degenerate-recover commit_is_durable \
   "A checkpoint that forgets everything never tears, so it satisfies every
    crash-consistency lemma. Only durability rejects it."
 
+gate no-cow-copy copy_preserves_visible \
+  "Copy-on-write without the copy. The snapshot follows the machine instead of
+   holding still, so the checkpoint mixes two instants of memory."
+
 echo
 if [ $status -eq 0 ]; then
   echo "all gates passed"

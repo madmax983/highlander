@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the rung 1 artifact — 66 verified, 0 errors.
+**Status:** Correct for the rung 1 and rung 2 artifact — 75 verified, 0 errors.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -101,8 +101,9 @@ There are now 2 gates:
 |---|---|---|
 | `no-barrier` | `commit_establishes_shape` | A2 gives 2 epochs, and not 1 |
 | `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
+| `no-cow-copy` | `copy_preserves_visible` | the snapshot holds still |
 
-§5b describes the second gate.
+§5b describes the second gate, and §10 describes the third gate.
 
 Note also that well-formedness (`wf`) holds without the barrier. A payload with
 distinct keys, and a seal outside the payload region, is a legal program. The
@@ -325,3 +326,71 @@ condition that §5a describes.
 - That the *implementation* does the barrier that the model assumes. A2 is a promise
   about hardware, and a promise about a future driver. This crate cannot test either
   promise.
+
+---
+
+## 10. Rung 2: copy-on-write
+
+Rung 1 says that a commit does not tear and does not forget. It says nothing about
+the time at which the machine can run. A checkpoint in rung 1 is a stop of the full
+machine.
+
+Rung 2 removes the stop. At the start of a checkpoint the machine marks each page
+read only, and then the machine continues. A write to a page traps. The machine
+copies the old contents to one side, and then the write continues. A background
+writer collects the pages at its own speed.
+
+### The design is one operator
+
+The side table of copied pages is a delta, and the snapshot is `mem ◁ saved`.
+
+`saved` holds the contents that a page had at the start of the checkpoint. `◁` gives
+priority to the right operand (§4.1). Thus a page with a copy reads at its old
+contents, and a page without a copy reads at its current contents, which are also
+its old contents. **The algebra of rung 1 gives rung 2 its mechanism.** The property
+that §4.1 records as a limitation — `◁` is not commutative — is the reason this
+design operates.
+
+### What the proof contains
+
+| Lemma | Statement |
+|---|---|
+| `cow::copy_preserves_visible` | a write to a page that the writer does not hold does not change what the writer will see |
+| `cow::mutate_preserves_inv` | a write by the machine keeps the invariant |
+| `cow::flush_preserves_inv` | a read by the writer keeps the invariant |
+| `cow::cow_run_preserves_inv` | **any** order of writes and reads keeps the invariant |
+| `cow::complete_run_equals_mem0` | after the writer visits each page, the result is the memory at the start |
+| `checkpoint::concurrent_checkpoint_is_exact` | rung 1 and rung 2 together: the stored checkpoint is the memory at the start |
+
+### Where "the machine does not stop" is a statement
+
+`mutate` and `flush` are both total functions, and `mutate_preserves_inv` has no
+condition about the progress of the checkpoint. From each reachable state, each
+write is permitted. That is the formal content of "the machine keeps running": the
+machine never waits for the writer, and the writer never waits for the machine.
+
+A model cannot state a bound on the length of a pause, because the model has no
+clock. But it can state that no operation has a condition that another operation
+must satisfy first. This model states that.
+
+### The third gate
+
+`--features no-cow-copy` removes the copy. `mutate` then writes the page and keeps
+nothing, thus the snapshot follows the machine. A page that the machine writes after
+the checkpoint starts, and that the writer collects after that, enters the checkpoint
+at its **new** contents. The checkpoint then holds a mixture of 2 instants of the
+machine. This is the same fault that rung 1 prevents at the storage layer, and it
+arrives through the snapshot instead.
+
+`copy_preserves_visible` must fail with this feature. The reference implementation
+makes the same statement in `without_the_copy_the_snapshot_drifts`.
+
+### What rung 2 does not contain
+
+- Page tables, a trap handler and a read-only bit. The model has pages and writes to
+  pages. It does not have an MMU. Rung 3 covers the hardware.
+- A bound on the memory that `saved` uses. `flush` releases a copy, thus at most 1
+  copy exists for each page, and only until the writer arrives. The model shows the
+  release, but it does not state a bound.
+- Any statement about time. There is no proof that the checkpoint finishes, or that
+  the pause is short. A schedule in which the writer never operates obeys each lemma.

@@ -21,6 +21,11 @@ no-barrier = []
 # fail to verify. Crash consistency alone does not catch this: a checkpoint that
 # forgets everything never tears. Never enable this outside scripts/gate.sh.
 degenerate-recover = []
+# The third falsifiability gate. Removes the copy from copy-on-write, so a write
+# during a checkpoint overwrites the page the writer has not collected yet. This
+# MUST make `cow::mutate_preserves_inv` fail to verify. Never enable this outside
+# scripts/gate.sh.
+no-cow-copy = []
 
 [package.metadata.verus]
 verify = true

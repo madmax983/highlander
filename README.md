@@ -35,6 +35,13 @@ results. The result is the old checkpoint or the new checkpoint. No result is a
 mixture of the two, and no other result is possible. Verus does a machine check of
 this theorem. See `theorem::crash_consistency`.
 
+The proof also covers a checkpoint that runs while the machine runs. Rung 2 uses
+copy-on-write. At the start of a checkpoint the machine keeps a copy of the old
+contents of each page that it writes. `checkpoint::concurrent_checkpoint_is_exact`
+shows the result: for any order of the writes by the machine and the reads by the
+checkpoint writer, the stored checkpoint is the memory of the machine at the instant
+the checkpoint started. The machine does not stop.
+
 The proof also shows that a commit keeps its data. Crash consistency is a safety
 property: it says that a crash never shows a torn state. A checkpoint that holds
 nothing also obeys that property. Thus `commit::commit_is_durable` states the other
@@ -72,6 +79,8 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `commit`   | §7.1 — the commit program, and the falsifiability gate | no |
 | `concrete` | §10.1 — a machine of 6 cells, with a test of each lattice point | no |
 | `sequence` | a run of many commits, and the invariant it keeps | no |
+| `cow`      | rung 2 — copy-on-write, and the snapshot it keeps | yes |
+| `checkpoint` | rung 1 and rung 2 together | no |
 | `refine`   | §6.3 — the formal position of A1, and its cost | no |
 
 ## How to build
@@ -143,12 +152,13 @@ you change one version, change the other version also.
 A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` runs 2 negative tests. Each one must fail.**
+**`make gate` runs 3 negative tests. Each one must fail.**
 
 | Feature | Lemma that must fail | Property it protects |
 |---|---|---|
 | `no-barrier` | `commit_establishes_shape` | A2 gives 2 epochs, and not 1 |
 | `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
+| `no-cow-copy` | `copy_preserves_visible` | the snapshot holds still |
 
 Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
 crash result is possible: the seal lands, but the payload does not land. This result
@@ -158,6 +168,10 @@ The second gate replaces `recover` with a version that keeps the seal and discar
 each payload cell. That version obeys each crash consistency lemma, because a store
 that holds nothing can never tear. Durability rejects it.
 
+The third gate removes the copy from copy-on-write. The snapshot then follows the
+machine, and a page that the machine writes during a checkpoint enters the
+checkpoint at its new contents. The result mixes 2 instants of the machine.
+
 Each gate also tests the cause of the failure. The failure must occur at the named
 lemma, and it must be a postcondition failure and not a compile error. A negative
 test that passes because the crate did not compile gives no information.
@@ -166,14 +180,15 @@ test that passes because the crate did not compile gives no information.
 examine each point of the crash lattice, and they do not use samples. Without the
 barrier, 63 of 128 landing schedules cause damage to the store. A separate test
 shows that a forgetful `recover` passes the full lattice and still loses each
-committed cell.
+committed cell. A third test shows that the snapshot moves away from the start state
+if the copy is absent.
 
 ## The ladder
 
 | Rung | Deliverable | Status |
 |---|---|---|
 | **1** | verified checkpoint commit and recover, on the abstract cell model | ✅ |
-| 2 | copy-on-write page records, to prevent a stop of the full machine | — |
+| **2** | **copy-on-write page records, to prevent a stop of the full machine** | ✅ |
 | 3 | capture of the true machine state (registers, page tables) | — |
 | 4 | continuation of one simple process after a hard reset | — |
 | 5 | I/O journal at the boundary | — |
