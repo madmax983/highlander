@@ -168,8 +168,3 @@ This project does not use the x86 paging method. That method gets protection fro
 the hardware: the MMU, the rings and the page tables. A formal proof cannot easily
 reach that hardware. In highlander, the proof gives protection and consistency. Thus
 Verus does necessary work in this project.
-
----
-
-*This README uses Simplified Technical English (ASD-STE100). Keep new text in the
-same style: short active sentences, approved words, and no idiom.*
