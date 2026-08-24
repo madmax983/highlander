@@ -485,6 +485,32 @@ join them, and the condition is not decoration. The `overlapping-layout` gate re
 the condition, and then one region writes over the other and the capture loses state
 with no indication of a fault.
 
+### The same problem, on the axis of time
+
+Rung 3 separates the cells of the machine from the cells of the machinery. That is a
+separation in **space**, and `no_layout_captures_itself` proves it is necessary.
+
+§7.4 needs the same separation in **time**, and the design doc does not state it in
+this form.
+
+A checkpoint fires after N instructions. But the machinery is also instructions.
+Thus the counter counts its own operation, and the observer is inside the stream
+that it observes.
+
+The condition for a deterministic trigger is this: **the counter must count only
+the instructions whose execution is a function of the captured state.** An
+instruction of the machine obeys that condition, because the capture holds
+everything it depends on. An instruction of the machinery does not: its count
+depends on the speed of the device and on the arrival of interrupts, and the capture
+holds neither.
+
+Thus a deterministic trigger needs a separation of machine instructions from
+machinery instructions. That is the same operation as the layout in rung 3, on a
+different axis. §11 open question 1 asks which hardware counter to use. This is the
+prior question, and a counter cannot answer it.
+
+Rung 4 needs an answer. Rung 3 does not.
+
 ### What rung 3 does not contain
 
 - Any specific hardware. There is no x86, no ARM, no MMU and no trap handler. A
