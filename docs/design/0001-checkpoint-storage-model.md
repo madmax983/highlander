@@ -295,7 +295,7 @@ Do the spine first. Each step is a condition for the next step:
 - [x] **Negative test:** remove the barrier, and the proof must *fail*. (§7.3) — `scripts/gate.sh`
 - [x] **Concrete instantiation:** 2 cells and 1 seal. Examine a crash at each lattice point by hand. This shows that the algebra describes a machine, and not only itself. — `concrete.rs`
 - [x] Property tests (proptest) against a reference implementation, to complement the proof. — `crates/highlander-ref`
-- [x] The refinement layer for A1 (§6.3) exists, or a note records its delay. — `refine.rs`
+- [x] The refinement layer for A1 (§6.3) exists. — `refine.rs`, and the simulation argument is complete
 
 ---
 

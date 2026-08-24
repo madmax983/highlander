@@ -94,7 +94,7 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `process`  | rung 4 — a resume, and what the world sees across a crash | no |
 | `io`       | rung 5 — the I/O boundary, and how it absorbs a repeat | no |
 | `checkpoint` | rungs 1, 2 and 3 together | no |
-| `refine`   | §6.3 — the formal position of A1, and its cost | no |
+| `refine`   | §6.3 — A1, and the proof that the model matches a real device | no |
 
 ## How to build
 
@@ -165,7 +165,7 @@ you change one version, change the other version also.
 A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` runs 6 negative tests. Each one must fail.**
+**`make gate` runs 7 negative tests. Each one must fail.**
 
 | Feature | Lemma that must fail | Property it protects |
 |---|---|---|
@@ -175,6 +175,7 @@ gates prevent this condition.
 | `overlapping-layout` | `capture_preserves_memory_at` | a capture loses nothing |
 | `ignore-input-journal` | `replay_follows_the_same_trajectory` | a replay needs its inputs |
 | `no-output-dedup` | `a_stale_event_is_dropped` | the boundary absorbs a repeat |
+| `multi-byte-cells` | `an_atomic_cell_lands_whole` | A1: a cell lands whole |
 
 Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
 crash result is possible: the seal lands, but the payload does not land. This result

@@ -18,23 +18,32 @@
 //!    exactly two outcomes. Combined with (1): if A1 is false, the abstract model is
 //!    **unsound**, not merely imprecise. That is the honest statement of the risk.
 //!
-//! # What is deliberately not proven here
+//! # The refinement itself
 //!
-//! The full simulation argument — that the byte-level model refines the abstract
-//! one under A1, for whole multi-cell programs — is **deferred**. Rung 1 needs A1 to
-//! have a formal home and a stated price, and it now has both. A refinement proof
-//! would be a second body of work of comparable size to the rest of this crate, and
-//! §10.1 of the design doc explicitly permits deferring it as long as the deferral
-//! is written down rather than silent. This paragraph is that record.
+//! [`physical_crash_is_an_abstract_crash`] is the simulation argument §6.3 asks for.
+//! A physical store holds bytes, a crash tears each written cell byte by byte, and
+//! under A1 **every physically reachable outcome is an abstract crash outcome**.
+//! The abstract model therefore over-approximates the real device, so every result
+//! proven about it — the crash-consistency theorem included — holds of the device.
+//!
+//! [`without_a1_a_physical_crash_escapes_the_model`] is the other half, and it is
+//! the reason A1 is an axiom rather than a lemma. Without atomicity there is a
+//! physically reachable store that **no** abstract crash outcome describes. The
+//! abstract model is then not conservative, it is wrong.
 
+use vstd::map::{assert_maps_equal, assert_maps_equal_internal};
 use vstd::prelude::*;
 use vstd::seq_lib::{assert_seqs_equal, assert_seqs_equal_internal};
+use vstd::set_lib::{assert_sets_equal, assert_sets_equal_internal};
 
+use crate::algebra::{CellId, Delta, Store};
 #[cfg(verus_only)]
-use crate::algebra::unit;
-use crate::algebra::{CellId, Delta};
+use crate::algebra::{override_, unit};
 #[cfg(verus_only)]
-use crate::crash::{singleton_lattice, sub_delta};
+use crate::crash::{
+    crash_at, crash_outcome_intro, epochs, is_crash_outcome, prefix_state, singleton_lattice,
+    sub_delta,
+};
 
 verus! {
 
@@ -130,6 +139,179 @@ pub proof fn abstract_model_assumes_a1<V>(e: Delta<V>, c: CellId, sigma: Delta<V
         sigma =~= unit::<V>() || sigma =~= e,
 {
     singleton_lattice(sigma, e, c);
+}
+
+// ---------------------------------------------------------------------------
+// §6.3 — the refinement
+// ---------------------------------------------------------------------------
+
+/// A store as a device holds it: cells of bytes. This is `V = Seq<u8>`, exactly as
+/// §6.3 asks.
+pub type PhysStore = Store<Bytes>;
+
+/// A crash while epoch `e` is landing.
+///
+/// A cell the epoch does not write keeps its contents. A cell the epoch does write
+/// tears: each byte position independently takes the old value or the new one. No
+/// order is assumed, and no cell is assumed to land as a unit — that assumption is
+/// A1, and it is stated separately below.
+pub open spec fn phys_crash(s0: PhysStore, e: Delta<Bytes>, s2: PhysStore) -> bool {
+    &&& e.dom().subset_of(s0.dom())
+    &&& s2.dom() =~= s0.dom()
+    &&& forall|c: CellId| #![auto]
+        s0.dom().contains(c) && !e.dom().contains(c) ==> s2[c] == s0[c]
+    &&& forall|c: CellId| #![auto] e.dom().contains(c) ==> bytewise_tear(s0[c], e[c], s2[c])
+}
+
+/// **A1, for the cells this epoch writes.**
+///
+/// Each cell is one atomic unit. `atomic_unit_tear_is_trivial` is what makes this
+/// the right statement: at one position, a tear has only the 2 endpoints.
+#[cfg(not(feature = "multi-byte-cells"))]
+pub open spec fn cells_are_atomic(s0: PhysStore, e: Delta<Bytes>) -> bool {
+    forall|c: CellId| #![auto] e.dom().contains(c) ==> s0[c].len() == 1
+}
+
+/// **The seventh falsifiability gate (`--features multi-byte-cells`).**
+///
+/// Drops A1. A cell may then be wider than the atomic write unit, a crash may leave
+/// it holding a mixture, and the abstract model has no state to describe that.
+/// `refinement_under_a1` must fail with this feature on.
+#[cfg(feature = "multi-byte-cells")]
+pub open spec fn cells_are_atomic(s0: PhysStore, e: Delta<Bytes>) -> bool {
+    true
+}
+
+/// **A cell lands whole, or not at all.** A1, stated for a single cell of a real
+/// crash — one line, and the whole of the refinement rests on it.
+///
+/// The hint is guarded so that it simply does not fire when A1 is absent, which
+/// leaves the postcondition as the thing that fails. This is the shape a gate target
+/// needs: a failure inside a proof reports without a lemma name.
+///
+/// This is the target of the `multi-byte-cells` gate.
+pub proof fn an_atomic_cell_lands_whole(
+    s0: PhysStore,
+    e: Delta<Bytes>,
+    s2: PhysStore,
+    c: CellId,
+)
+    requires
+        phys_crash(s0, e, s2),
+        cells_are_atomic(s0, e),
+        e.dom().contains(c),
+    ensures
+        s2[c] == s0[c] || s2[c] == e[c],
+{
+    if s0[c].len() == 1 {
+        atomic_unit_tear_is_trivial(s0[c], e[c], s2[c]);
+    }
+}
+
+/// **The simulation, for one epoch.**
+///
+/// Under A1, every physically reachable outcome is `s0 ◁ σ` for some `σ ⊑ e`. That
+/// is exactly a point of the abstract crash lattice (§6.2), so the abstract model
+/// contains the physical one.
+///
+/// The witness is the obvious one: `σ` is the epoch restricted to the cells that
+/// took their new contents.
+pub proof fn refinement_under_a1(s0: PhysStore, e: Delta<Bytes>, s2: PhysStore)
+    requires
+        phys_crash(s0, e, s2),
+        cells_are_atomic(s0, e),
+    ensures
+        exists|sigma: Delta<Bytes>| sub_delta(sigma, e) && s2 =~= override_(s0, sigma),
+{
+    let sigma = e.filter_keys(|c: CellId| s2[c] == e[c]);
+
+    assert forall|c: CellId| e.dom().contains(c) implies s2[c] == s0[c] || s2[c] == e[c] by {
+        an_atomic_cell_lands_whole(s0, e, s2, c);
+    }
+
+    assert(sub_delta(sigma, e));
+    assert_maps_equal!(s2, override_(s0, sigma), c => {
+        if e.dom().contains(c) && s2[c] != e[c] {
+            assert(s2[c] == s0[c]);
+        }
+    });
+    assert(sub_delta(sigma, e) && s2 =~= override_(s0, sigma));
+}
+
+/// **The refinement, for a whole program.**
+///
+/// A crash during epoch `k` of a program, on a real device, produces a store the
+/// abstract model already accounts for. Therefore every abstract result transfers —
+/// including `theorem::crash_consistency`.
+pub proof fn physical_crash_is_an_abstract_crash(
+    s0: PhysStore,
+    p: crate::crash::Program<Bytes>,
+    k: int,
+    s2: PhysStore,
+)
+    requires
+        0 <= k < epochs(p).len(),
+        phys_crash(prefix_state(s0, p, k), epochs(p)[k], s2),
+        cells_are_atomic(prefix_state(s0, p, k), epochs(p)[k]),
+    ensures
+        is_crash_outcome(s0, p, s2),
+{
+    let prefix = prefix_state(s0, p, k);
+    refinement_under_a1(prefix, epochs(p)[k], s2);
+    let sigma = choose|sigma: Delta<Bytes>|
+        sub_delta(sigma, epochs(p)[k]) && s2 =~= override_(prefix, sigma);
+    crash_outcome_intro(s0, p, k, sigma);
+    assert(s2 =~= crash_at(s0, p, k, sigma));
+}
+
+/// **Why A1 is an axiom and not a lemma.**
+///
+/// Without atomicity there is a physically reachable store that no point of the
+/// abstract crash lattice describes. A 2-byte cell holding `00 00`, overwritten by
+/// `01 01`, can be left holding `00 01` — neither the old contents nor the new ones,
+/// and `⊑` has no third option.
+///
+/// The abstract model is then **not** a conservative over-approximation of the
+/// device. It is simply wrong about it, and every theorem above rests on an
+/// assumption the hardware has broken.
+pub proof fn without_a1_a_physical_crash_escapes_the_model() -> (r: (
+    PhysStore,
+    Delta<Bytes>,
+    PhysStore,
+))
+    ensures
+        phys_crash(r.0, r.1, r.2),
+        forall|sigma: Delta<Bytes>| sub_delta(sigma, r.1) ==> r.2 != override_(r.0, sigma),
+{
+    let old: Bytes = seq![0u8, 0u8];
+    let new: Bytes = seq![1u8, 1u8];
+    let torn: Bytes = seq![0u8, 1u8];
+
+    let s0: PhysStore = map![0nat => old];
+    let e: Delta<Bytes> = map![0nat => new];
+    let s2: PhysStore = map![0nat => torn];
+
+    assert(bytewise_tear(old, new, torn)) by {
+        assert forall|i: int| 0 <= i < torn.len() implies torn[i] == old[i] || torn[i] == new[i] by {
+            assert(i == 0 || i == 1);
+        }
+    }
+    assert(phys_crash(s0, e, s2));
+
+    assert forall|sigma: Delta<Bytes>| sub_delta(sigma, e) implies s2 != override_(s0, sigma) by {
+        if sigma.dom().contains(0nat) {
+            assert(e.dom().contains(0nat));
+            assert(sigma[0nat] == e[0nat]);
+            assert(override_(s0, sigma)[0nat] == new);
+            // torn and new agree at position 1 and differ at position 0.
+            assert(torn[0] != new[0]);
+        } else {
+            assert(override_(s0, sigma)[0nat] == old);
+            // torn and old agree at position 0 and differ at position 1.
+            assert(torn[1] != old[1]);
+        }
+    }
+    (s0, e, s2)
 }
 
 } // verus!

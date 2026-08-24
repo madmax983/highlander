@@ -2,20 +2,38 @@
 # Falsifiability gates: break a load-bearing part of the design, and the proof MUST
 # break with it.
 #
-# A crash model of this size can be internally consistent and describe nothing. Each
-# gate removes one thing the design claims is essential and requires the proof to
-# notice. A gate that passes because the crate failed to compile is worse than no
-# gate at all, so each case checks three conditions, not one:
+# A model this size can be internally consistent and describe nothing. Each gate
+# removes one thing the design claims is essential and requires the proof to notice.
+# A gate that passes because the crate failed to compile is worse than no gate at
+# all, so each case checks three conditions, not one:
 #
 #   1. verification fails,
-#   2. it fails on the named lemma,
-#   3. it fails as a *proof* failure, not a compile error.
+#   2. the failure lands inside the named lemma,
+#   3. it is a *proof* failure, not a compile error.
+#
+# Condition 2 is resolved by source position rather than by matching the lemma name
+# in the output. Verus reports a failure at the offending line, and its context does
+# not always reach back far enough to include the signature, so a name match gives
+# false negatives on any lemma with a multi-line signature.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 status=0
 
-# gate <feature> <lemma> <what it proves>
+# Which `pub proof fn` encloses <file>:<line>.
+enclosing_fn() {
+  awk -v target="$2" '
+    NR <= target && /pub proof fn / {
+      line = $0
+      sub(/.*pub proof fn /, "", line)
+      sub(/[(<].*/, "", line)
+      name = line
+    }
+    END { print name }
+  ' "$1"
+}
+
+# gate <feature> <lemma> <why it matters>
 gate() {
   local feature="$1" lemma="$2" why="$3"
   echo
@@ -45,13 +63,27 @@ gate() {
     return
   fi
 
-  if ! echo "$out" | grep -q "$lemma"; then
-    fail "verification failed, but not on '$lemma'. Something else broke instead."
+  if ! echo "$out" | grep -qE '^error: (postcondition|precondition|assertion|invariant)'; then
+    fail "verification failed, but not with a proof obligation. Expected a
+   postcondition, precondition, assertion or invariant failure."
     return
   fi
 
-  if ! echo "$out" | grep -q 'failed this postcondition'; then
-    fail "expected a postcondition failure; got something else."
+  # Every source position Verus complained about, mapped to its enclosing lemma.
+  local hit=0 seen=""
+  while read -r loc; do
+    [ -z "$loc" ] && continue
+    local file="${loc%%:*}" line="${loc##*:}"
+    [ -f "$file" ] || continue
+    local fn
+    fn=$(enclosing_fn "$file" "$line")
+    [ -n "$fn" ] && seen="$seen $fn"
+    [ "$fn" = "$lemma" ] && hit=1
+  done <<< "$(echo "$out" | grep -oE '[A-Za-z0-9_/.-]+\.rs:[0-9]+' | sort -u)"
+
+  if [ $hit -eq 0 ]; then
+    fail "verification failed, but not inside '$lemma'.
+   Failures landed in:$seen"
     return
   fi
 
@@ -82,6 +114,10 @@ gate ignore-input-journal replay_follows_the_same_trajectory \
 gate no-output-dedup a_stale_event_is_dropped \
   "An I/O boundary that accepts everything. The window repeated after a crash
    reaches the world a second time, so §8 is unbounded again."
+
+gate multi-byte-cells an_atomic_cell_lands_whole \
+  "A1 dropped: a cell wider than the atomic write unit. A crash can leave it
+   holding a mixture, which no point of the abstract lattice describes."
 
 echo
 if [ $status -eq 0 ]; then

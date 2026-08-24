@@ -41,6 +41,11 @@ ignore-input-journal = []
 # `io::a_repeated_window_is_delivered_once` fail to verify. Never enable this
 # outside scripts/gate.sh.
 no-output-dedup = []
+# The seventh falsifiability gate. Drops A1, so a cell may be wider than the atomic
+# write unit and a crash may leave it holding a mixture. This MUST make
+# `refine::refinement_under_a1` fail to verify. Never enable this outside
+# scripts/gate.sh.
+multi-byte-cells = []
 
 [package.metadata.verus]
 verify = true

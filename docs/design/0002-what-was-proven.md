@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the rung 1, 2 and 3 artifact — 83 verified, 0 errors.
+**Status:** Correct for the complete ladder — 106 verified, 0 errors, 7 gates.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -106,13 +106,22 @@ There are now 2 gates:
 
 §5b describes the second gate, §10 the third, and §11 the fourth.
 
+| `multi-byte-cells` | `an_atomic_cell_lands_whole` | A1: a cell lands whole |
+
 **A note on the target of a gate.** Gates 3 and 4 first pointed at a lemma with a
-long proof. Verus then reported a failure at an assertion inside the proof, and the
-output did not give the name of the lemma, thus `gate.sh` rejected the result as a
-failure for the wrong reason. The correction was to state the property as a lemma
-with an **empty proof body**: `copy_preserves_visible` and
-`capture_preserves_memory_at`. Verus proves each of them without a hint, thus the
-postcondition is what fails. A gate needs a target of this shape.
+long proof. Verus reported a failure at an assertion inside that proof, and the
+output did not give the name of the lemma. The first correction was to state each
+property as a lemma with an **empty proof body**, or with a **guarded** hint that
+does not fire when the gate removes its condition. `copy_preserves_visible`,
+`capture_preserves_memory_at`, `a_stale_event_is_dropped` and
+`an_atomic_cell_lands_whole` all have this shape, and each one states its property
+in a single line.
+
+The second correction was to `gate.sh` itself. The script matched the name of the
+lemma against the output of Verus, and Verus does not always show enough context to
+include a signature of several lines. The script now reads the position of each
+failure and finds the `pub proof fn` that encloses it. A gate is now precise about
+location, and it does not depend on the format of a message.
 
 Note also that well-formedness (`wf`) holds without the barrier. A payload with
 distinct keys, and a seal outside the payload region, is a legal program. The
@@ -137,11 +146,25 @@ is trivial". `refine.rs` gives 2 more exact statements:
   cell. Read this with the first item: **if A1 is false, the abstract model is
   unsound. It is not only less exact.**
 
-**Deferred, and recorded here:** the full simulation argument. That argument shows
-that the model at byte level refines the abstract model under A1, for full programs
-of many cells. It is an operation of approximately the same size as the remainder of
-the crate. §10.1 permits a delay if a document records the delay. This section and
-the module docs in `refine.rs` are that record.
+**No longer deferred.** `refine.rs` now contains the simulation argument.
+
+`phys_crash` is a crash on a device that holds bytes: a cell the epoch does not
+write keeps its contents, and a cell the epoch does write tears byte by byte.
+
+| Lemma | Statement |
+|---|---|
+| `an_atomic_cell_lands_whole` | with A1, a written cell holds its old contents or its new contents |
+| `refinement_under_a1` | each physical outcome of 1 epoch is `s0 ◁ σ` for some `σ ⊑ e` |
+| `physical_crash_is_an_abstract_crash` | each physical outcome of a program is an abstract crash outcome |
+| `without_a1_a_physical_crash_escapes_the_model` | without A1, a physical outcome exists that no abstract outcome describes |
+
+The third row is the result. The abstract model **contains** the physical model, thus
+each result about the abstract model holds for the device, and
+`theorem::crash_consistency` is one of those results.
+
+The fourth row is the reason A1 is an axiom, and not a lemma. Without atomicity the
+abstract model is not a safe approximation of the device. It is wrong about the
+device, and each theorem above it rests on a promise the hardware has broken.
 
 ---
 
