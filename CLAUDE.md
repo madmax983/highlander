@@ -98,7 +98,8 @@ Read the text again and check three things:
 
 ## Proof work
 
-Two invariants hold this development together. Do not break either one silently.
+Four invariants hold this development together. Do not break one of them without a
+record of the change.
 
 - **`algebra::dunion_comm` must fail to verify if you remove its `disjoint`
   precondition.** `•` is left-biased and `◁` is right-biased on purpose. If both
@@ -106,6 +107,10 @@ Two invariants hold this development together. Do not break either one silently.
   proves nothing.
 - **`scripts/gate.sh` must fail with `--features no-barrier`.** The failure must
   occur at `commit_establishes_shape`, and it must be a postcondition failure.
+- **`scripts/gate.sh` must also fail with `--features degenerate-recover`.** The
+  failure must occur at `commit_is_durable`. Crash consistency is a safety property,
+  thus a checkpoint that forgets all data obeys it. Durability is a separate
+  property, and it needs its own proof. See `docs/design/0002` §5b.
 - **Do not put `clean` back into a commit precondition.** `clean` holds only for a
   new store. A commit leaves the older checkpoint in the other slot, thus a store is
   never clean again. Use `protocol::steady`. See `docs/design/0002` §5a.

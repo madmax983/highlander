@@ -36,7 +36,8 @@ use crate::crash::{denote, epochs, is_crash_outcome, wf};
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
 use crate::protocol::{
-    clean, gen_at, gen_below, is_slot, live, other, other_involution, recover, slots_wf, steady,
+    clean, footprint, gen_at, gen_below, is_slot, live, live_footprint, other, other_involution,
+    recover, slots_wf, steady, steady_implies_live,
 };
 #[cfg(verus_only)]
 use crate::theorem::{commit_shape, crash_consistency};
@@ -417,4 +418,157 @@ pub proof fn commit_preserves_steady(
     assert(gen_below(gen_at(s_new, l.seal), (n + 1) as nat));
 }
 
-} // verus!\n
+// ---------------------------------------------------------------------------
+// Durability: the committed payload survives
+// ---------------------------------------------------------------------------
+
+/// **A commit stores what it was given.**
+///
+/// Crash consistency is a *safety* property: it says a crash never exposes a torn
+/// state. On its own that is satisfied for free by a system which exposes nothing —
+/// a `recover` returning the empty store makes both sides of `crash_consistency`'s
+/// disjunction equal, and every lemma about crashes still passes.
+///
+/// This lemma is the other half. After a successful commit, each cell the payload
+/// wrote is present in the recovered store holding the value that was written, and
+/// the seal reads the new generation. Together with `theorem::crash_consistency` it
+/// says the checkpoint neither tears nor forgets.
+///
+/// `scripts/gate.sh` keeps it honest: under `--features degenerate-recover`,
+/// `recover` keeps the seal and discards every payload cell, and this lemma must
+/// then fail to verify.
+pub proof fn commit_is_durable(
+    g: Geom,
+    s0: Store<CellVal>,
+    kvs: Payload,
+    target: Slot,
+    n: nat,
+    crc: u64,
+)
+    requires
+        is_slot(g, target),
+        steady(g, s0, other(g, target), n),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+    ensures
+        ({
+            let r = recover(g, denote(s0, commit_program(kvs, target, n, crc)));
+            // every committed cell survives, holding the value that was committed
+            &&& forall|c: CellId| #[trigger]
+                kvs_keys(kvs).contains(c) ==> r.dom().contains(c) && r[c] == kvs_delta(kvs)[c]
+            // the checkpoint identifies itself as the new generation
+            &&& gen_at(r, target.seal) == Some((n + 1) as nat)
+            // and holds nothing beyond the slot it was written to
+            &&& r.dom().subset_of(footprint(target))
+        }),
+{
+    let p = commit_program(kvs, target, n, crc);
+    let s_new = denote(s0, p);
+
+    commit_establishes_shape(g, s0, kvs, target, n, crc);
+    commit_preserves_steady(g, s0, kvs, target, n, crc);
+    steady_implies_live(g, s_new, target, (n + 1) as nat);
+    crate::theorem::apply_two(s0, epochs(p));
+    kvs_delta_dom(kvs);
+
+    assert(s_new =~= override_(override_(s0, epochs(p)[0]), epochs(p)[1]));
+    assert(epochs(p)[0] =~= kvs_delta(kvs));
+    assert(live_footprint(g, s_new) =~= footprint(target));
+
+    assert forall|c: CellId| kvs_keys(kvs).contains(c) implies {
+        &&& recover(g, s_new).dom().contains(c)
+        &&& recover(g, s_new)[c] == kvs_delta(kvs)[c]
+    } by {
+        assert(target.payload.contains(c));
+        assert(footprint(target).contains(c));
+        assert(c != target.seal);
+        assert(epochs(p)[0].dom().contains(c));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §6.1 well-formedness of the emitted program
+// ---------------------------------------------------------------------------
+
+/// The tail is well formed: a barrier constrains nothing, and a lone seal write
+/// joins an empty epoch.
+pub proof fn wf_commit_tail(target: Slot, n: nat, crc: u64)
+    ensures
+        wf(commit_tail(target, n, crc)),
+{
+    let sops = seal_ops(target, n, crc);
+    assert(sops.drop_first().len() == 0);
+    assert(wf(sops.drop_first()));
+    assert_seqs_equal!(epochs(sops.drop_first()), seq![unit::<CellVal>()]);
+    assert(!epochs(sops.drop_first())[0].dom().contains(target.seal));
+    assert(sops[0] == Op::Write(target.seal, seal_val(n, crc)));
+    assert(wf(sops));
+
+    let tail = commit_tail(target, n, crc);
+    if barrier_ops().len() == 0 {
+        assert_seqs_equal!(tail, sops);
+    } else {
+        assert(tail[0] == Op::Barrier::<CellVal>);
+        assert_seqs_equal!(tail.drop_first(), sops);
+    }
+}
+
+/// Prepending a payload's writes keeps a program well formed, provided the payload
+/// writes distinct cells and none of them already appears in the epoch it joins.
+///
+/// This is §4.4's condition doing its stated job: `wf` is the definedness
+/// side-condition of `•`, and here it is discharged rather than assumed.
+pub proof fn wf_prepend_writes(kvs: Payload, rest: Program<CellVal>)
+    requires
+        distinct_keys(kvs),
+        wf(rest),
+        kvs_keys(kvs).disjoint(epochs(rest)[0].dom()),
+    ensures
+        wf(write_ops(kvs) + rest),
+    decreases kvs.len(),
+{
+    crate::crash::epochs_nonempty(rest);
+    if kvs.len() == 0 {
+        assert_seqs_equal!(write_ops(kvs) + rest, rest);
+    } else {
+        distinct_head_fresh(kvs);
+        kvs_keys_contains(kvs, kvs[0].0);
+        assert(kvs_keys(kvs.drop_first()).subset_of(kvs_keys(kvs)));
+
+        wf_prepend_writes(kvs.drop_first(), rest);
+        write_ops_drop_first(kvs, rest);
+
+        // The head cell is in neither half of the epoch it would join: not in the
+        // rest of the payload (distinct keys), and not in what follows (disjoint).
+        epochs_prepend_writes(kvs.drop_first(), rest);
+        kvs_delta_dom(kvs.drop_first());
+        crate::algebra::dunion_dom(kvs_delta(kvs.drop_first()), epochs(rest)[0]);
+        assert(!epochs(write_ops(kvs.drop_first()) + rest)[0].dom().contains(kvs[0].0));
+    }
+}
+
+/// **The program the protocol emits is well formed (§6.1).**
+///
+/// Without this, `epochs` would still produce a value for an ill-formed program —
+/// `dunion` is total, so two writes to one cell would silently collapse — and every
+/// downstream result would be about a denotation that means nothing. §4.4 claims
+/// this condition carries the algebra's weight; this lemma is where that claim is
+/// discharged for the commit path.
+pub proof fn commit_program_is_wf(g: Geom, kvs: Payload, target: Slot, n: nat, crc: u64)
+    requires
+        slots_wf(g),
+        is_slot(g, target),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+    ensures
+        wf(commit_program(kvs, target, n, crc)),
+{
+    let tail = commit_tail(target, n, crc);
+    wf_commit_tail(target, n, crc);
+    epochs_commit_tail(target, n, crc);
+    payload_avoids_seal(g, kvs, target);
+    assert(kvs_keys(kvs).disjoint(epochs(tail)[0].dom()));
+    wf_prepend_writes(kvs, tail);
+}
+
+} // verus!

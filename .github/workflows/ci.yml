@@ -40,7 +40,10 @@ jobs:
       - run: verus --version
       - name: Verify the proof
         run: ./scripts/verify.sh
-      # Must FAIL without the barrier, on commit_establishes_shape, as a
-      # postcondition failure. See docs/design/0002-what-was-proven.md §4.
-      - name: Falsifiability gate
+      # Two negative tests, both of which must FAIL to verify, each on its named
+      # lemma and as a postcondition failure rather than a compile error:
+      #   no-barrier         -> commit_establishes_shape  (A2 gives 2 epochs)
+      #   degenerate-recover -> commit_is_durable         (a checkpoint keeps data)
+      # See docs/design/0002-what-was-proven.md §4 and §5b.
+      - name: Falsifiability gates
         run: ./scripts/gate.sh

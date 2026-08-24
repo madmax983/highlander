@@ -35,6 +35,12 @@ results. The result is the old checkpoint or the new checkpoint. No result is a
 mixture of the two, and no other result is possible. Verus does a machine check of
 this theorem. See `theorem::crash_consistency`.
 
+The proof also shows that a commit keeps its data. Crash consistency is a safety
+property: it says that a crash never shows a torn state. A checkpoint that holds
+nothing also obeys that property. Thus `commit::commit_is_durable` states the other
+half: after a commit, the recovered store holds each cell that the commit wrote,
+with the value that the commit wrote.
+
 The proof covers a sequence of commits, and not one commit only. A machine does
 many commits. Each commit writes to the other slot and increases the generation by
 1. `sequence::run_is_crash_consistent` shows that each commit in the sequence is
@@ -132,22 +138,35 @@ script stops with the message `bad substitution`.
 Verus pins rustc 1.97.1. The file `rust-toolchain.toml` pins the same version. If
 you change one version, change the other version also.
 
-## The two gates
+## The gates
 
-A crash model can be correct in itself and show nothing about a real machine. Two
+A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` — if you remove the barrier, the proof must fail.** Without A2, the
-payload epoch and the seal epoch become one epoch. In that epoch, this crash result is
-possible: the seal lands, but the payload does not land. This result is not
-generation N, and it is not generation N+1. The gate also tests the cause of the failure. The failure must occur at
-`commit_establishes_shape`, and the failure must be a postcondition failure and not
-a compile error. A negative test that passes because the crate did not compile gives
-no information.
+**`make gate` runs 2 negative tests. Each one must fail.**
 
-**`make test` — the reference implementation must find the same fault.** The tests
+| Feature | Lemma that must fail | Property it protects |
+|---|---|---|
+| `no-barrier` | `commit_establishes_shape` | A2 gives 2 epochs, and not 1 |
+| `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
+
+Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
+crash result is possible: the seal lands, but the payload does not land. This result
+is not generation N, and it is not generation N+1.
+
+The second gate replaces `recover` with a version that keeps the seal and discards
+each payload cell. That version obeys each crash consistency lemma, because a store
+that holds nothing can never tear. Durability rejects it.
+
+Each gate also tests the cause of the failure. The failure must occur at the named
+lemma, and it must be a postcondition failure and not a compile error. A negative
+test that passes because the crate did not compile gives no information.
+
+**`make test` — the reference implementation must find the same faults.** The tests
 examine each point of the crash lattice, and they do not use samples. Without the
-barrier, 63 of 128 landing schedules cause damage to the store.
+barrier, 63 of 128 landing schedules cause damage to the store. A separate test
+shows that a forgetful `recover` passes the full lattice and still loses each
+committed cell.
 
 ## The ladder
 

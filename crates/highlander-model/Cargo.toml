@@ -16,6 +16,11 @@ default = []
 # `commit_program`, which MUST make `theorem::crash_consistency` fail to verify.
 # Never enable this outside scripts/gate.sh.
 no-barrier = []
+# The second falsifiability gate. Replaces `recover` with a version that keeps the
+# seal and discards every payload cell, which MUST make `commit::commit_is_durable`
+# fail to verify. Crash consistency alone does not catch this: a checkpoint that
+# forgets everything never tears. Never enable this outside scripts/gate.sh.
+degenerate-recover = []
 
 [package.metadata.verus]
 verify = true

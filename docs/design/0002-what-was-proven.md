@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the rung 1 artifact — 62 verified, 0 errors.
+**Status:** Correct for the rung 1 artifact — 66 verified, 0 errors.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -87,13 +87,22 @@ program without that shape. The lemma that fails is
 `commit::commit_establishes_shape`. That lemma states that the program the protocol
 *writes* has the shape. Without a barrier the protocol writes 1 epoch, and not 2.
 
-Thus `scripts/gate.sh` tests 3 conditions:
+Thus `scripts/gate.sh` tests 3 conditions for each gate:
 
 1. Verification fails.
-2. The failure occurs at `commit_establishes_shape`.
+2. The failure occurs at the named lemma.
 3. The failure is a **postcondition** failure, and not a compile error.
 
 A negative test that passes because the crate did not compile gives no information.
+
+There are now 2 gates:
+
+| Feature | Lemma that must fail | Property it protects |
+|---|---|---|
+| `no-barrier` | `commit_establishes_shape` | A2 gives 2 epochs, and not 1 |
+| `degenerate-recover` | `commit_is_durable` | a checkpoint keeps its data |
+
+§5b describes the second gate.
 
 Note also that well-formedness (`wf`) holds without the barrier. A payload with
 distinct keys, and a seal outside the payload region, is a legal program. The
@@ -195,6 +204,60 @@ That result is correct for the question this crate answers: can a checkpoint tea
 It is not an error. The incremental checkpoints of rung 2 need this freedom. A system
 that needs a checkpoint of a full slot must make
 `kvs_keys(kvs).subset_of(target.payload)` an equality at its own call sites.
+
+---
+
+## 5b. Crash consistency permits a checkpoint that forgets everything
+
+The theorem of §7.3 is a **safety** property. It says that a crash never shows a
+torn state. A system that shows nothing obeys this property at no cost.
+
+Give `recover` this definition: keep the seal of the live slot, and discard each
+payload cell. It is a checkpoint system that loses all data. A test of the artifact
+shows that this definition passes **61 of the 63** lemmas at that time. It obeys
+`crash_consistency`, `run_is_crash_consistent`, `recover_idempotent`,
+`recover_lands_clean`, `live_stable` and `seal_absent_recovers_old`. Both parts of
+the disjunction in `crash_consistency` become equal, thus the disjunction is true.
+Only 1 assertion in `concrete.rs`, about 1 specific store of 6 cells, rejected the
+definition, and it did so by accident.
+
+Thus the proof needed a second property. `commit::commit_is_durable` states it:
+
+| Clause | Statement |
+|---|---|
+| 1 | each cell the payload wrote is in the recovered store, with the value that the commit wrote |
+| 2 | the seal of the recovered store reads generation `n + 1` |
+| 3 | the recovered store holds nothing outside the footprint of the target slot |
+
+Clause 1 rejects the definition above. Clause 3 shows that the stale slot does not
+enter the new checkpoint.
+
+The `degenerate-recover` feature keeps this result honest. It replaces `recover`
+with the definition that discards data, and `scripts/gate.sh` requires
+`commit_is_durable` to fail. The reference implementation makes the same statement
+in `a_forgetful_recover_is_crash_consistent_but_loses_data`: that test shows the
+forgetful `recover` passes the full crash lattice, and then shows that each
+committed cell is absent.
+
+**Safety and durability are separate properties.** A proof of one is not a proof of
+the other, and rung 1 now contains both.
+
+---
+
+## 5c. `wf` was not connected to anything
+
+§4.4 states that the condition "no 2 writes in 1 epoch touch the same cell" occurs 3
+times, and that the algebra needs it. `crash::wf` states that condition for a
+program. But no lemma needed `wf`, and only `wf` itself used `wf`. It was dead.
+
+This was not a defect in soundness. `commit::distinct_keys` states the same
+condition for a payload, and each commit lemma needs `distinct_keys`. But `epochs`
+uses `dunion`, and `dunion` is total. Thus `epochs` gives a value for a program that
+is not well formed, and that value has no meaning. No lemma showed that the program
+the protocol writes has meaning.
+
+`commit::commit_program_is_wf` now shows it, with `wf_prepend_writes` and
+`wf_commit_tail`. The claim in §4.4 is now true for the commit path.
 
 ---
 

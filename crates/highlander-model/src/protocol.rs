@@ -134,8 +134,30 @@ pub open spec fn live_footprint(g: Geom, s: Store<CellVal>) -> Set<CellId> {
 
 /// §7.5 — recovery as a projection onto the live checkpoint. Read-only by
 /// construction: the result is a restriction of the input, never an update of it.
+#[cfg(not(feature = "degenerate-recover"))]
 pub open spec fn recover(g: Geom, s: Store<CellVal>) -> Store<CellVal> {
     s.restrict(live_footprint(g, s))
+}
+
+/// **The second falsifiability gate (`--features degenerate-recover`).**
+///
+/// This version keeps the live seal and discards every payload cell. It is a
+/// checkpoint system that forgets all of your data.
+///
+/// It satisfies `crash_consistency`, `run_is_crash_consistent`, `recover_idempotent`,
+/// `recover_lands_clean`, `live_stable` and `seal_absent_recovers_old` — because
+/// crash consistency is a *safety* property, and a store that holds nothing can
+/// never tear. Only `commit::commit_is_durable` rejects it.
+///
+/// If verification passes with this feature on, durability is not being proven.
+#[cfg(feature = "degenerate-recover")]
+pub open spec fn recover(g: Geom, s: Store<CellVal>) -> Store<CellVal> {
+    s.restrict(
+        match live(g, s) {
+            None => Set::empty(),
+            Some(sl) => set![sl.seal],
+        },
+    )
 }
 
 /// The fixed points of [`recover`].

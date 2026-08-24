@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use highlander_ref::{
-    CellVal, Geom, Slot, Store, clean, commit_epochs, crash_at, denote, gen_at, recover,
+    CellVal, Geom, Slot, Store, clean, commit_epochs, crash_at, denote, gen_at, live, recover,
 };
 use proptest::prelude::*;
 
@@ -213,6 +213,101 @@ proptest! {
                 "commit {step} left a clean store; the previous checkpoint should still be there",
             );
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// **Durability: a commit stores what it was given.**
+    ///
+    /// Crash consistency says a crash never exposes a torn state. That is a safety
+    /// property, and a system exposing nothing satisfies it for free. This is the
+    /// other half: after the commit completes, the recovered store holds each cell
+    /// that was written, with the value that was written.
+    #[test]
+    fn a_commit_stores_what_it_was_given(
+        generation in 0u64..1_000_000,
+        live_bytes in prop::collection::vec(any::<u8>(), SLOT_WIDTH as usize),
+        payload in payload_strategy(),
+    ) {
+        let g = geometry();
+        let s0 = initial_store(generation, &live_bytes);
+        let epochs = commit_epochs(&payload, &g.b, generation, 0, true);
+        let r = recover(&g, &denote(&s0, &epochs));
+
+        for (c, bytes) in &payload {
+            prop_assert_eq!(
+                r.get(c),
+                Some(&CellVal::Data(bytes.clone())),
+                "cell {} did not survive the commit",
+                c,
+            );
+        }
+        prop_assert_eq!(gen_at(&r, B_SEAL), Some(generation + 1));
+        // and nothing from the other slot leaked in
+        for c in std::iter::once(A_SEAL).chain(1..=SLOT_WIDTH) {
+            prop_assert!(
+                !r.contains_key(&c),
+                "cell {} from the stale slot is in the checkpoint",
+                c,
+            );
+        }
+    }
+}
+
+/// **Why durability needs its own proof: the executable form of the second gate.**
+///
+/// This `recover` keeps the live seal and discards every payload cell — a checkpoint
+/// system that forgets all of your data. It still satisfies crash consistency,
+/// because a store holding nothing can never tear. Only a durability check rejects
+/// it.
+///
+/// The Verus gate (`scripts/gate.sh --features degenerate-recover`) makes the same
+/// point against the proof: 61 of 63 lemmas accept this definition.
+#[test]
+fn a_forgetful_recover_is_crash_consistent_but_loses_data() {
+    fn recover_seal_only(g: &Geom, s: &Store) -> Store {
+        match live(g, s) {
+            None => Store::new(),
+            Some(sl) => s
+                .iter()
+                .filter(|(k, _)| **k == sl.seal)
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
+        }
+    }
+
+    let g = geometry();
+    let s0 = initial_store(7, &[0; SLOT_WIDTH as usize]);
+    let payload: Vec<(u64, Vec<u8>)> = (101..=106).map(|c| (c, vec![1u8])).collect();
+    let epochs = commit_epochs(&payload, &g.b, 7, 0, true);
+
+    let old = recover_seal_only(&g, &s0);
+    let new = recover_seal_only(&g, &denote(&s0, &epochs));
+
+    // Crash consistency still holds, over the entire lattice.
+    for (k, epoch) in epochs.iter().enumerate() {
+        let cells: BTreeSet<u64> = epoch.keys().copied().collect();
+        for landed in all_subsets(&cells) {
+            let got = recover_seal_only(&g, &crash_at(&s0, &epochs, k, &landed));
+            assert!(
+                got == old || got == new,
+                "a forgetful recover should still be crash consistent",
+            );
+        }
+    }
+
+    // But every committed cell is gone.
+    for (c, _) in &payload {
+        assert!(!new.contains_key(c), "cell {c} should have been discarded");
+    }
+    assert_eq!(new.len(), 1, "only the seal survives");
+
+    // The real recover keeps them.
+    let honest = recover(&g, &denote(&s0, &epochs));
+    for (c, bytes) in &payload {
+        assert_eq!(honest.get(c), Some(&CellVal::Data(bytes.clone())));
     }
 }
 

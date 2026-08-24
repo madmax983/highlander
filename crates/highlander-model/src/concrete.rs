@@ -302,4 +302,4 @@ pub open spec fn two_commits() -> Seq<Step> {
     seq![(payload(), 0u64), (payload_a(), 0u64)]
 }
 
-} // verus!\n
+} // verus!
