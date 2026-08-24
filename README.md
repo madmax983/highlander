@@ -35,6 +35,12 @@ results. The result is the old checkpoint or the new checkpoint. No result is a
 mixture of the two, and no other result is possible. Verus does a machine check of
 this theorem. See `theorem::crash_consistency`.
 
+The proof covers a sequence of commits, and not one commit only. A machine does
+many commits. Each commit writes to the other slot and increases the generation by
+1. `sequence::run_is_crash_consistent` shows that each commit in the sequence is
+crash consistent, and that the state after each commit obeys the same conditions
+again. `protocol::steady` gives those conditions.
+
 The CRC is not a part of this argument (design doc, §5.1). The CRC gives more
 protection if A1 or A2 are not true. But the CRC guarantee is probabilistic. Thus
 the CRC stays outside the proof.
@@ -59,6 +65,7 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `theorem`  | §7.3 — the crash consistency theorem | no |
 | `commit`   | §7.1 — the commit program, and the falsifiability gate | no |
 | `concrete` | §10.1 — a machine of 6 cells, with a test of each lattice point | no |
+| `sequence` | a run of many commits, and the invariant it keeps | no |
 | `refine`   | §6.3 — the formal position of A1, and its cost | no |
 
 ## How to build

@@ -42,7 +42,8 @@ use crate::crash::{
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
 use crate::protocol::{
-    clean, footprint, gen_at, is_slot, live, live_footprint, other, recover, slots_wf,
+    clean, footprint, gen_at, is_slot, live, live_footprint, other, other_involution, recover,
+    slots_wf, steady, steady_implies_live,
 };
 
 verus! {
@@ -99,11 +100,11 @@ pub open spec fn commit_shape(
     n: nat,
     crc: u64,
 ) -> bool {
-    &&& slots_wf(g)
     &&& is_slot(g, target)
-    &&& clean(g, s0)
-    &&& live(g, s0) == Some(other(g, target))
-    &&& gen_at(s0, other(g, target).seal) == Some(n)
+    // The machine invariant, not a pristine store: the live slot holds generation
+    // `n` and the target holds something strictly older, or nothing. See
+    // `protocol::steady` for why `clean` was too strong to survive a commit.
+    &&& steady(g, s0, other(g, target), n)
     // Two epochs — payload, then seal. A2 (the barrier) is what makes this 2 and not 1.
     &&& epochs(p).len() == 2
     // The payload writes land only inside the target slot's own region (§7.5 rule 2).
@@ -130,30 +131,28 @@ pub proof fn seal_absent_recovers_old(
     delta: Delta<CellVal>,
 )
     requires
-        slots_wf(g),
         is_slot(g, target),
-        clean(g, s0),
-        live(g, s0) == Some(other(g, target)),
-        gen_at(s0, other(g, target).seal) == Some(n),
+        steady(g, s0, other(g, target), n),
         delta.dom().subset_of(target.payload),
     ensures
         recover(g, override_(s0, delta)) =~= recover(g, s0),
 {
     let l = other(g, target);
     let s2 = override_(s0, delta);
+    other_involution(g, target);
 
-    // The payload region touches neither seal, so neither generation moves.
+    // The payload region touches neither seal, so neither generation moves...
     assert(!delta.dom().contains(l.seal));
     assert(!delta.dom().contains(target.seal));
     assert(gen_at(s2, l.seal) == gen_at(s0, l.seal));
     assert(gen_at(s2, target.seal) == gen_at(s0, target.seal));
 
-    // s0 is clean, so it holds nothing outside the live footprint — in particular
-    // the target's seal is absent, which is why recovery cannot be fooled.
-    assert(!footprint(l).contains(target.seal));
-    assert(gen_at(s0, target.seal) is None);
-
-    assert(live(g, s2) == live(g, s0));
+    // ...so the invariant survives the partial write, and recovery still selects
+    // the same slot. Note this needs only that the target is *older*, not that it
+    // is absent — which is what lets a second commit work at all.
+    assert(steady(g, s2, l, n));
+    steady_implies_live(g, s0, l, n);
+    steady_implies_live(g, s2, l, n);
     assert(live_footprint(g, s2) =~= footprint(l));
     assert(live_footprint(g, s0) =~= footprint(l));
 

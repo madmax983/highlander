@@ -1,7 +1,7 @@
 # What was actually proven
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Current as of the rung-1 artifact — 51 verified, 0 errors.
+**Status:** Current as of the rung-1 artifact — 62 verified, 0 errors.
 
 The design doc is the record of intent. This is the record of what the artifact
 contains, including the places where building it changed the design. Read this
@@ -120,6 +120,78 @@ docs in `refine.rs` are that record.
 
 ---
 
+## 5a. One commit was not enough — the invariant had to be weakened
+
+The first version of this artifact proved crash consistency for **a single commit
+from a pristine store**, and did not notice that this is not the same as proving it
+for a machine.
+
+`crash_consistency` required `clean(g, s0)`: the store holds nothing outside the
+live slot's footprint. That is true of a freshly formatted device and false of every
+store afterwards, because a successful commit *deliberately* leaves the previous
+checkpoint in the other slot — that is what ping-pong means. So the theorem's
+conclusion did not re-establish its own precondition, and nothing covered the second
+commit. §7 of the design doc has the same blind spot: it describes one commit
+throughout.
+
+`clean` was load-bearing in exactly one place. `seal_absent_recovers_old` used it to
+derive `gen_at(s0, target.seal) is None` — the target slot has no seal at all, so
+recovery cannot be confused by it. On the second commit that is false: the target is
+the old slot, still carrying its previous seal.
+
+The fix is `protocol::steady`, which states the weaker property that survives a
+commit:
+
+```rust
+pub open spec fn steady(g: Geom, s: Store<CellVal>, l: Slot, n: nat) -> bool {
+    &&& slots_wf(g)
+    &&& is_slot(g, l)
+    &&& gen_at(s, l.seal) == Some(n)
+    &&& gen_below(gen_at(s, other(g, l).seal), n)   // older, or absent
+}
+```
+
+The condition is not "the target has no seal" but "the target's generation is
+strictly lower". `clean_implies_steady` shows the old precondition implies the new
+one, so this is a strict generalisation and the pristine-device case still works.
+
+**This is where A3 finally does work.** A3 — the generation counter never wraps — is
+stated in §5 of the design doc and then used nowhere in the single-commit proof,
+because with `clean` there was no second generation to compare against. Across a run
+the comparison is unavoidable: recovery selects the slot with the greater
+generation, and that ordering is the only thing distinguishing the new checkpoint
+from the one it replaced. A wrapped counter makes `gen_below` true of a *newer*
+slot, and recovery then returns stale data. A3 stops being decoration.
+
+What is now proven, in `commit.rs` and `sequence.rs`:
+
+| Lemma | Statement |
+|---|---|
+| `commit_preserves_steady` | a commit maps a steady state to a steady state, slots exchanged, generation raised |
+| `run_preserves_steady` | the invariant holds across a whole run, and the generation advances by exactly 1 per commit |
+| `run_is_crash_consistent` | the next commit is crash consistent **and** the resulting state satisfies this lemma's own hypotheses again |
+
+The third clause is what makes the result cover every commit rather than the first.
+The lemma reproduces its preconditions for the tail of the sequence, so repeated
+application walks the entire run.
+
+`concrete::a_second_commit_is_also_safe` demonstrates this on the six-cell machine,
+and proves `!clean(g, s1)` outright — the store after one commit really is not
+clean, so the gap was real and not merely a missing convenience.
+
+### A related property that is deliberately *not* required
+
+A commit may write a **subset** of its target's payload region. Nothing requires the
+payload to cover the slot. A partial payload leaves older cells in place, so the
+recovered checkpoint can mix generations.
+
+That is correct for the question this crate answers — can a checkpoint tear? — and
+it is not an oversight. Rung 2's incremental checkpoints depend on exactly this
+freedom. A system that wants whole-slot checkpoints should strengthen
+`kvs_keys(kvs).subset_of(target.payload)` to an equality at its own call sites.
+
+---
+
 ## 6. The CRC is inert, and enforced to stay that way
 
 Per §5.1 the CRC is a probabilistic backstop, outside the proven core.
@@ -168,8 +240,11 @@ performance knob.
 ## 9. What is *not* proven
 
 - Anything about rungs 2–5. No COW, no registers, no page tables, no resume.
+- Termination or progress of a run. `run_is_crash_consistent` says every commit in a
+  sequence is safe; it does not say the machine makes any.
 - The I/O boundary (§8). The outside world still does not roll back.
-- A3 (generation counter never wraps). Stated, assumed, free at 64 bits, unused.
+- A3 (generation counter never wraps). Still an assumption, not a theorem — but it
+  is now *used*, by every generation comparison in a run. See §5a.
 - Liveness of any kind. The theorem says a crash recovers to one of two consistent
   states; it says nothing about progress, and a protocol that never commits
   satisfies it.

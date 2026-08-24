@@ -35,7 +35,9 @@ use crate::crash::{Op, Program};
 use crate::crash::{denote, epochs, is_crash_outcome, wf};
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
-use crate::protocol::{clean, gen_at, is_slot, live, other, recover, slots_wf};
+use crate::protocol::{
+    clean, gen_at, gen_below, is_slot, live, other, other_involution, recover, slots_wf, steady,
+};
 #[cfg(verus_only)]
 use crate::theorem::{commit_shape, crash_consistency};
 
@@ -303,11 +305,8 @@ pub proof fn commit_establishes_shape(
     crc: u64,
 )
     requires
-        slots_wf(g),
         is_slot(g, target),
-        clean(g, s0),
-        live(g, s0) == Some(other(g, target)),
-        gen_at(s0, other(g, target).seal) == Some(n),
+        steady(g, s0, other(g, target), n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
@@ -350,11 +349,8 @@ pub proof fn commit_is_crash_consistent(
     crc: u64,
 )
     requires
-        slots_wf(g),
         is_slot(g, target),
-        clean(g, s0),
-        live(g, s0) == Some(other(g, target)),
-        gen_at(s0, other(g, target).seal) == Some(n),
+        steady(g, s0, other(g, target), n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
@@ -369,4 +365,56 @@ pub proof fn commit_is_crash_consistent(
     crash_consistency(g, s0, commit_program(kvs, target, n, crc), target, n, crc);
 }
 
-} // verus!
+
+// ---------------------------------------------------------------------------
+// The inductive step: a commit re-establishes its own precondition
+// ---------------------------------------------------------------------------
+
+/// **A commit leaves the machine ready for the next commit.**
+///
+/// This is the step that turns "one commit is safe" into "a machine is safe".
+/// `commit_is_crash_consistent` needs a steady store; this lemma shows a successful
+/// commit produces one, with the slots exchanged and the generation raised.
+///
+/// Note the conclusion is about `denote`, the raw store — not about `recover`. The
+/// machine does not run recovery after a successful commit; it carries on with both
+/// slots populated, which is exactly why `clean` could never have been the
+/// invariant here.
+pub proof fn commit_preserves_steady(
+    g: Geom,
+    s0: Store<CellVal>,
+    kvs: Payload,
+    target: Slot,
+    n: nat,
+    crc: u64,
+)
+    requires
+        is_slot(g, target),
+        steady(g, s0, other(g, target), n),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+    ensures
+        steady(g, denote(s0, commit_program(kvs, target, n, crc)), target, (n + 1) as nat),
+{
+    let p = commit_program(kvs, target, n, crc);
+    let l = other(g, target);
+    other_involution(g, target);
+    commit_establishes_shape(g, s0, kvs, target, n, crc);
+    crate::theorem::apply_two(s0, epochs(p));
+
+    let s_new = denote(s0, p);
+    assert(s_new =~= override_(override_(s0, epochs(p)[0]), epochs(p)[1]));
+
+    // The seal write puts generation n + 1 in the target.
+    assert(epochs(p)[1].dom() =~= set![target.seal]);
+    assert(gen_at(s_new, target.seal) == Some((n + 1) as nat));
+
+    // The live slot's seal is in neither epoch, so it still reads generation n —
+    // which is strictly below n + 1. A3 is what makes that comparison meaningful.
+    assert(!epochs(p)[0].dom().contains(l.seal));
+    assert(!epochs(p)[1].dom().contains(l.seal));
+    assert(gen_at(s_new, l.seal) == Some(n));
+    assert(gen_below(gen_at(s_new, l.seal), (n + 1) as nat));
+}
+
+} // verus!\n

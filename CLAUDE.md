@@ -12,18 +12,30 @@ in STE.
 
 ### Scope
 
-| Applies | Does not apply |
+| STE now | Exempt |
 |---|---|
 | `README.md` | Rust doc comments (`//!`, `///`) |
-| `docs/**/*.md` | code comments (`//`) |
-| `CLAUDE.md` (this file) | commit messages |
-| any new Markdown prose | `scripts/*.sh` comments |
+| `CLAUDE.md` (this file) | code comments (`//`) |
+| each new Markdown document | commit messages |
+| | `scripts/*.sh` comments |
 
 Rust doc comments are exempt on purpose. They carry the reasoning behind the
 proof — why `•` is left-biased, why the CRC stays inert, why the gate targets
-`commit_establishes_shape`. STE removes the constructions that reasoning needs, so
-applying it there would cost more than it gains. If you want STE in the doc comments
-too, that is a deliberate change to make, not a default.
+`commit_establishes_shape`. STE removes the constructions that this reasoning needs.
+If you want STE in the doc comments also, that is a deliberate change to make, and
+not a default.
+
+**Not yet converted.** These files use ordinary English:
+
+| File | Why |
+|---|---|
+| `docs/design/0001-checkpoint-storage-model.md` | the author's text, kept word for word |
+| `docs/design/0002-what-was-proven.md` | explains the reasons behind design changes |
+| `docs/adr/0001-ping-pong-vs-log.md` | records a decision and its trade-offs |
+
+A conversion of these 3 files is an open decision. Do not convert
+`0001-checkpoint-storage-model.md` without permission from the author, because a
+conversion changes the author's own words.
 
 ### Rules that matter most here
 
@@ -98,6 +110,9 @@ Two invariants hold this development together. Do not break either one silently.
   proves nothing.
 - **`scripts/gate.sh` must fail with `--features no-barrier`.** The failure must
   occur at `commit_establishes_shape`, and it must be a postcondition failure.
+- **Do not put `clean` back into a commit precondition.** `clean` holds only for a
+  new store. A commit leaves the older checkpoint in the other slot, thus a store is
+  never clean again. Use `protocol::steady`. See `docs/design/0002` §5a.
 
 Run `make` before you commit. It runs the proof, the gate, the property tests and
 clippy.

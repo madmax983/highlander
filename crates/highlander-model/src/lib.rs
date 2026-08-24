@@ -9,4 +9,5 @@ pub mod concrete;
 pub mod crash;
 pub mod protocol;
 pub mod refine;
+pub mod sequence;
 pub mod theorem;

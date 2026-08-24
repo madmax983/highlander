@@ -14,7 +14,9 @@
 
 use std::collections::BTreeSet;
 
-use highlander_ref::{CellVal, Geom, Slot, Store, clean, commit_epochs, crash_at, denote, recover};
+use highlander_ref::{
+    CellVal, Geom, Slot, Store, clean, commit_epochs, crash_at, denote, gen_at, recover,
+};
 use proptest::prelude::*;
 
 const A_SEAL: u64 = 0;
@@ -145,6 +147,71 @@ proptest! {
         for landed in all_subsets(&cells) {
             let crashed = crash_at(&s0, &epochs, 0, &landed);
             prop_assert_eq!(recover(&g, &crashed), old.clone());
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// **A run of commits, not one commit.**
+    ///
+    /// The single-commit theorem needed a *clean* store — one holding nothing
+    /// outside the live slot. A successful commit leaves the previous checkpoint in
+    /// the other slot, so the store is never clean again, and the single-commit
+    /// result did not cover the second commit.
+    ///
+    /// This test walks a run of up to 4 commits, alternating slots, and checks the
+    /// whole crash lattice at every step. It also asserts the store is *not* clean
+    /// after each commit — the condition that made the gap real rather than
+    /// theoretical. `concrete::a_second_commit_is_also_safe` proves the same thing.
+    #[test]
+    fn a_run_of_commits_stays_crash_consistent(
+        generation in 0u64..1_000,
+        live in prop::collection::vec(any::<u8>(), SLOT_WIDTH as usize),
+        runs in prop::collection::vec(
+            prop::collection::vec(any::<u8>(), 1..=SLOT_WIDTH as usize), 1..=4),
+    ) {
+        let g = geometry();
+        let mut s = initial_store(generation, &live);
+        prop_assert!(clean(&g, &s), "a freshly formatted store is clean");
+
+        let mut live_seal = A_SEAL;
+        let mut n = generation;
+
+        for (step, bytes) in runs.iter().enumerate() {
+            let target = if live_seal == A_SEAL { &g.b } else { &g.a };
+            let cells: Vec<u64> = target.payload.iter().copied().collect();
+            let payload: Vec<(u64, Vec<u8>)> = bytes
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (cells[i], vec![*b]))
+                .collect();
+
+            let epochs = commit_epochs(&payload, target, n, 0, true);
+            let old = recover(&g, &s);
+            let new = recover(&g, &denote(&s, &epochs));
+
+            for (k, epoch) in epochs.iter().enumerate() {
+                let ec: BTreeSet<u64> = epoch.keys().copied().collect();
+                for landed in all_subsets(&ec) {
+                    let got = recover(&g, &crash_at(&s, &epochs, k, &landed));
+                    prop_assert!(
+                        got == old || got == new,
+                        "commit {step}: epoch {k}, landed {landed:?} gave a third state",
+                    );
+                }
+            }
+
+            s = denote(&s, &epochs);
+            live_seal = target.seal;
+            n += 1;
+
+            prop_assert_eq!(gen_at(&s, live_seal), Some(n));
+            prop_assert!(
+                !clean(&g, &s),
+                "commit {step} left a clean store; the previous checkpoint should still be there",
+            );
         }
     }
 }

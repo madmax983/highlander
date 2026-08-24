@@ -144,6 +144,87 @@ pub open spec fn clean(g: Geom, s: Store<CellVal>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// The steady state of a running machine
+// ---------------------------------------------------------------------------
+
+/// `x < n`, where an absent generation ranks below every present one.
+pub open spec fn gen_below(x: Option<nat>, n: nat) -> bool {
+    match x {
+        None => true,
+        Some(m) => m < n,
+    }
+}
+
+/// **The invariant a running machine maintains.**
+///
+/// `clean` describes a *pristine* store — one holding nothing outside the live
+/// slot's footprint. That is true of a freshly formatted device and false of every
+/// store thereafter, because a successful commit deliberately leaves the previous
+/// checkpoint in the other slot. A machine that only ever satisfied `clean` could
+/// commit exactly once.
+///
+/// `steady` is the weaker property that survives commits: the live slot carries
+/// generation `n`, and the other slot carries something strictly older, or nothing
+/// at all. **This is where A3 starts doing work.** Without "the generation counter
+/// never wraps", `gen_below` could be satisfied by a wrapped counter and recovery
+/// would select the stale slot.
+///
+/// Note what is *not* required: that the payload covers the whole slot. A commit may
+/// write a subset of its target's payload region, leaving older cells in place. The
+/// recovered checkpoint then mixes generations — which is correct for the question
+/// this crate answers (can a checkpoint tear?) and is precisely what rung 2's
+/// incremental checkpoints will depend on.
+pub open spec fn steady(g: Geom, s: Store<CellVal>, l: Slot, n: nat) -> bool {
+    &&& slots_wf(g)
+    &&& is_slot(g, l)
+    &&& gen_at(s, l.seal) == Some(n)
+    &&& gen_below(gen_at(s, other(g, l).seal), n)
+}
+
+/// There are two slots, and they are different slots.
+pub proof fn other_involution(g: Geom, sl: Slot)
+    requires
+        slots_wf(g),
+        is_slot(g, sl),
+    ensures
+        is_slot(g, other(g, sl)),
+        other(g, other(g, sl)) == sl,
+        other(g, sl) != sl,
+{
+    assert(g.a != g.b);
+}
+
+/// A steady store recovers to the slot the invariant names.
+pub proof fn steady_implies_live(g: Geom, s: Store<CellVal>, l: Slot, n: nat)
+    requires
+        steady(g, s, l, n),
+    ensures
+        live(g, s) == Some(l),
+{
+    other_involution(g, l);
+}
+
+/// The old precondition implies the new one, so `steady` is strictly more general.
+/// A freshly formatted store is steady; so is every store a commit produces.
+pub proof fn clean_implies_steady(g: Geom, s: Store<CellVal>, l: Slot, n: nat)
+    requires
+        slots_wf(g),
+        is_slot(g, l),
+        clean(g, s),
+        live(g, s) == Some(l),
+        gen_at(s, l.seal) == Some(n),
+    ensures
+        steady(g, s, l, n),
+{
+    other_involution(g, l);
+    // Clean means the store holds nothing outside the live footprint, and the other
+    // slot's seal is outside it. So that seal is absent, not merely older.
+    assert(live_footprint(g, s) =~= footprint(l));
+    assert(!footprint(l).contains(other(g, l).seal));
+    assert(!s.dom().contains(other(g, l).seal));
+}
+
+// ---------------------------------------------------------------------------
 // §7.5 — recovery is a closure operator
 // ---------------------------------------------------------------------------
 
