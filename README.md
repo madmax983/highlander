@@ -1,137 +1,175 @@
 # highlander
 
-> the kernel that doesn't die
+> the kernel that does not die
 
-An orthogonally persistent kernel: the machine checkpoints its *entire* state —
-every process, every register, every page — to stable storage as an atomic
-transaction. No filesystem, no `save`, no serialization step. A crash resumes
-mid-instruction rather than rebooting.
+Highlander is an orthogonally persistent kernel. The kernel writes the full state of
+the machine to stable storage as one atomic transaction. The full state includes
+each process, each register, and each page. There is no file system, no save
+command, and no serialization step. After a crash, the machine continues from the
+middle of an instruction. The machine does not do a reboot.
 
-Persistence stops being something a process *does* and becomes a property of
-*existing*.
+A process does no work to become persistent. A process is persistent because it
+exists.
 
-**This repository currently contains rung 1: the verified checkpoint storage
-model.** Everything above the checkpoint layer is meaningless if the checkpoint can
-tear, so the crash-consistency theorem comes first. It is self-contained, needs no
-hardware, and stands on its own as a verified checkpoint journal even if rungs 2–5
-are never built.
+This repository contains rung 1 of the project: the verified checkpoint storage
+model. A checkpoint tears if it holds a mixture of the old data and the new data.
+If a checkpoint can tear, all layers above the checkpoint layer have no value. Thus
+the crash consistency theorem is the first task. Rung 1 needs no hardware. Rung 1 is
+a verified checkpoint journal, even if no person builds rungs 2 to 5.
 
 ## The result
 
 ```
-Crash consistency of the whole machine reduces to two stated hardware promises,
-with a probabilistic backstop for when they are broken.
+Crash consistency of the full machine reduces to two hardware promises.
+A probabilistic test gives protection if the hardware does not keep them.
 ```
 
 | | |
 |---|---|
-| **A1** | a single cell write lands entirely or not at all |
-| **A2** | writes issued before a barrier land before any issued after |
-| **A4** | the seal fits in exactly one cell |
+| **A1** | A write to one cell lands fully, or the write does not land. |
+| **A2** | All writes before a barrier land before all writes after the barrier. |
+| **A4** | The seal is in one cell only. |
 
-Given those, every possible crash during a commit recovers to exactly one of two
-states — the old checkpoint or the new one. Never a blend, never anything else.
-`theorem::crash_consistency`, machine-checked by [Verus](https://github.com/verus-lang/verus).
+If A1, A2 and A4 are true, then each possible crash during a commit gives one of two
+results. The result is the old checkpoint or the new checkpoint. No result is a
+mixture of the two, and no other result is possible. Verus does a machine check of
+this theorem. See `theorem::crash_consistency`.
 
-The CRC is **not** part of that argument (§5.1). It is defence-in-depth for when A1
-or A2 turn out to be false, its guarantee is probabilistic, and it is deliberately
-quarantined outside the proven core.
+The CRC is not a part of this argument (design doc, §5.1). The CRC gives more
+protection if A1 or A2 are not true. But the CRC guarantee is probabilistic. Thus
+the CRC stays outside the proof.
 
 ## Layout
 
-| Path | What |
+| Path | Contents |
 |---|---|
-| `crates/highlander-model` | the verified model — algebra, crash lattice, protocol, theorem |
-| `crates/highlander-ref` | an **independent** executable reference implementation + property tests |
-| `docs/design/0001-…` | the design doc: intent, axioms, the ladder |
-| `docs/design/0002-…` | **what was actually proven**, including where building it changed the design |
-| `docs/adr/0001-…` | why ping-pong slots rather than an append-only log |
+| `crates/highlander-model` | the verified model: algebra, crash lattice, protocol, theorem |
+| `crates/highlander-ref` | an independent reference implementation and its property tests |
+| `docs/design/0001-…` | the design doc: intent, axioms, the rungs |
+| `docs/design/0002-…` | the proof as built, and where the work changed the design |
+| `docs/adr/0001-…` | why the protocol uses two slots and not an append-only log |
 
-Inside `highlander-model`, each module depends only on the ones above it:
+In `highlander-model`, each module uses only the modules above it in this table.
 
-| Module | Doc section | Generic over `V`? |
+| Module | Doc section | Generic in `V` |
 |---|---|---|
 | `algebra`  | §4 — override `◁`, disjoint union `•`, the bridge lemma | yes |
 | `crash`    | §6 — programs, epochs, the crash lattice | yes |
-| `protocol` | §7 — ping-pong slots, seals, `recover` | no |
-| `theorem`  | §7.3 — the crash-consistency theorem | no |
-| `commit`   | §7.1 — the emitted program, and the falsifiability gate | no |
-| `concrete` | §10.1 — a real six-cell machine, every lattice point checked | no |
-| `refine`   | §6.3 — where A1 lives formally, and what it costs | no |
+| `protocol` | §7 — two checkpoint slots, seals, `recover` | no |
+| `theorem`  | §7.3 — the crash consistency theorem | no |
+| `commit`   | §7.1 — the commit program, and the falsifiability gate | no |
+| `concrete` | §10.1 — a machine of 6 cells, with a test of each lattice point | no |
+| `refine`   | §6.3 — the formal position of A1, and its cost | no |
 
-## Building
+## How to build
 
-Everything except `make verify` and `make gate` works with a stock Rust toolchain.
+A standard Rust toolchain is enough for all targets except `make verify` and
+`make gate`. Those two targets need Verus.
 
 ```
 make test     # property tests against the reference implementation
-make check    # cargo build + clippy — the model is ordinary Rust 2024 too
-make verify   # the proof                     (needs verus)
-make gate     # the falsifiability gate       (needs verus)
-make          # all four
+make check    # cargo build and clippy: the model is also usual Rust 2024
+make verify   # the proof                       (Verus necessary)
+make gate     # the falsifiability gate         (Verus necessary)
+make          # all four targets
 ```
 
-### Getting Verus
+### How to install Verus
 
-The pinned `vstd` version in `Cargo.toml` must match the `verus` binary; `make
-verify` refuses to run if they disagree.
+The `vstd` version in `Cargo.toml` and the `verus` program must agree. `make verify`
+stops if they do not agree.
+
+1. Download the release with `curl`:
+
+   ```sh
+   curl -L -o verus.zip \
+     https://github.com/verus-lang/verus/releases/latest/download/verus-<version>-arm64-macos.zip
+   ```
+
+2. Extract the archive:
+
+   ```sh
+   unzip verus.zip
+   ```
+
+3. Move the directory to its permanent location:
+
+   ```sh
+   mv verus-arm64-macos ~/.local/share/verus
+   ```
+
+4. Make the symbolic links:
+
+   ```sh
+   ln -sf ~/.local/share/verus/verus       ~/.local/bin/verus
+   ln -sf ~/.local/share/verus/cargo-verus ~/.local/bin/cargo-verus
+   ```
+
+Symbolic links in a directory that is already in `PATH` are better than a change to
+your shell profile. Verus finds its `verus-root` file through a symbolic link
+correctly. Verus also needs `rustup` in `PATH`, because Verus starts the pinned
+toolchain itself. A usual rustup installation does this for you.
+
+Use `curl` and do not use a browser. A browser sets the `com.apple.quarantine`
+attribute on the file, but `curl` does not set it. If you use a browser, remove the
+attribute:
 
 ```sh
-curl -L -o verus.zip \
-  https://github.com/verus-lang/verus/releases/latest/download/verus-<version>-arm64-macos.zip
-unzip verus.zip
-mv verus-arm64-macos ~/.local/share/verus
-ln -sf ~/.local/share/verus/verus       ~/.local/bin/verus
-ln -sf ~/.local/share/verus/cargo-verus ~/.local/bin/cargo-verus
+xattr -dr com.apple.quarantine ~/.local/share/verus
 ```
 
-Symlinking into a directory already on `PATH` beats editing your shell profile, and
-Verus resolves its own `verus-root` through the symlink correctly. Note it also
-needs `rustup` on `PATH` — it invokes the pinned toolchain itself.
+Do not use the `macos_allow_gatekeeper.sh` file in the release. Line 5 of that file
+contains `${{BASH_SOURCE[0]}}`. The two brace characters are an error, and the
+script stops with the message `bad substitution`.
 
-Use `curl`, not a browser: curl does not set `com.apple.quarantine`, so Gatekeeper
-stays out of the way. If you already downloaded via a browser, run `xattr -dr
-com.apple.quarantine <dir>` — **do not** run the bundled `macos_allow_gatekeeper.sh`,
-which has a `${{BASH_SOURCE[0]}}` typo and fails with "bad substitution".
+Verus pins rustc 1.97.1. The file `rust-toolchain.toml` pins the same version. If
+you change one version, change the other version also.
 
-Verus pins rustc **1.97.1**, which is also what `rust-toolchain.toml` pins. Keep
-them together.
+## The two gates
 
-## The two gates that make this worth anything
+A crash model can be correct in itself and show nothing about a real machine. Two
+gates prevent this condition.
 
-A crash model this elaborate can be internally consistent and describe nothing.
-Two checks exist to catch that:
+**`make gate` — if you remove the barrier, the proof must fail.** Without A2, the
+payload epoch and the seal epoch become one epoch. In that epoch, this crash result is
+possible: the seal lands, but the payload does not land. This result is not
+generation N, and it is not generation N+1. The gate also tests the cause of the failure. The failure must occur at
+`commit_establishes_shape`, and the failure must be a postcondition failure and not
+a compile error. A negative test that passes because the crate did not compile gives
+no information.
 
-**`make gate` — remove the barrier, and the proof must break.** Without A2 the
-payload and seal merge into one epoch, admitting the point *"seal landed, payload
-didn't"* — a state that recovers to neither generation. The gate additionally
-requires that the failure lands on `commit_establishes_shape` and is a
-*postcondition* failure rather than a compile error, because a negative test that
-passes because the crate didn't build is worse than no gate.
-
-**`make test` — the reference implementation must find the same bug.** It
-brute-forces the whole crash lattice rather than sampling it, and reports that
-without a barrier **63 of 128** landing schedules corrupt the store.
+**`make test` — the reference implementation must find the same fault.** The tests
+examine each point of the crash lattice, and they do not use samples. Without the
+barrier, 63 of 128 landing schedules cause damage to the store.
 
 ## The ladder
 
 | Rung | Deliverable | Status |
 |---|---|---|
-| **1** | verified checkpoint commit/recover over the abstract cell model | ✅ |
-| 2 | COW page tracking, so a checkpoint doesn't stop the world | — |
-| 3 | capture real machine state (registers, page tables) into a checkpoint | — |
-| 4 | resume a single trivial process across a hard reset | — |
-| 5 | I/O journaling at the boundary | — |
+| **1** | verified checkpoint commit and recover, on the abstract cell model | ✅ |
+| 2 | copy-on-write page records, to prevent a stop of the full machine | — |
+| 3 | capture of the true machine state (registers, page tables) | — |
+| 4 | continuation of one simple process after a hard reset | — |
+| 5 | I/O journal at the boundary | — |
 
-Rungs 2–5 are explicitly optional. Rung 1 is useful in isolation.
+Rungs 2 to 5 are optional. You can use rung 1 alone.
 
-**Known limitation:** the outside world does not roll back. Checkpoint at N+1,
-crash, resume from N — but the packet was sent and the DMA landed. Orthogonal
-persistence is only truly orthogonal *inside* the machine. See §8 of the design doc.
+**Known limitation:** the external world does not go back to an earlier state. The
+machine makes a checkpoint at generation N+1, then the machine crashes, then the
+machine starts again at generation N. But the network packet went out, and the DMA
+transfer completed. Orthogonal persistence is fully orthogonal only inside the
+machine. See §8 of the design doc.
 
-## Lineage
+## Background
 
-KeyKOS (which ran production banking workloads) and EROS. Deliberately **not** the
-x86-paging path — that derives protection from hardware (MMU, rings, page tables),
-which is largely unreachable by formal proof. Here protection and consistency derive
-from *proof*, which is what makes Verus load-bearing rather than decorative.
+KeyKOS and EROS. KeyKOS operated production banking workloads.
+
+This project does not use the x86 paging method. That method gets protection from
+the hardware: the MMU, the rings and the page tables. A formal proof cannot easily
+reach that hardware. In highlander, the proof gives protection and consistency. Thus
+Verus does necessary work in this project.
+
+---
+
+*This README uses Simplified Technical English (ASD-STE100). Keep new text in the
+same style: short active sentences, approved words, and no idiom.*
