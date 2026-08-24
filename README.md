@@ -80,8 +80,14 @@ verify` refuses to run if they disagree.
 curl -L -o verus.zip \
   https://github.com/verus-lang/verus/releases/latest/download/verus-<version>-arm64-macos.zip
 unzip verus.zip
-export PATH="$PWD/verus-arm64-macos:$PATH"
+mv verus-arm64-macos ~/.local/share/verus
+ln -sf ~/.local/share/verus/verus       ~/.local/bin/verus
+ln -sf ~/.local/share/verus/cargo-verus ~/.local/bin/cargo-verus
 ```
+
+Symlinking into a directory already on `PATH` beats editing your shell profile, and
+Verus resolves its own `verus-root` through the symlink correctly. Note it also
+needs `rustup` on `PATH` — it invokes the pinned toolchain itself.
 
 Use `curl`, not a browser: curl does not set `com.apple.quarantine`, so Gatekeeper
 stays out of the way. If you already downloaded via a browser, run `xattr -dr
