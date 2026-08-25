@@ -33,7 +33,7 @@ use crate::machine::{
 };
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
-use crate::protocol::{is_slot, other, recover, steady};
+use crate::protocol::{is_slot, recover, steady};
 
 verus! {
 
@@ -53,6 +53,7 @@ pub proof fn concurrent_checkpoint_is_exact(
     ops: Seq<CowOp<CellVal>>,
     kvs: Payload,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
@@ -65,7 +66,8 @@ pub proof fn concurrent_checkpoint_is_exact(
         kvs_keys(kvs) =~= mem0.dom(),
         // rung 1: a legitimate commit into a steady store
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
@@ -77,7 +79,7 @@ pub proof fn concurrent_checkpoint_is_exact(
             },
 {
     cow_snapshot_is_exact(mem0, ops);
-    commit_is_durable(g, s0, kvs, target, n, crc);
+    commit_is_durable(g, s0, kvs, target, live_slot, n, crc);
     assert(kvs_delta(kvs) =~= mem0);
 }
 
@@ -97,6 +99,7 @@ pub proof fn a_machine_survives_a_crash(
     m0: Machine,
     kvs: Payload,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
@@ -108,7 +111,8 @@ pub proof fn a_machine_survives_a_crash(
         kvs_keys(kvs) =~= image(lay),
         // rung 1: a legitimate commit into a steady store
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
@@ -121,7 +125,7 @@ pub proof fn a_machine_survives_a_crash(
 {
     let r = recover(g, denote(s0, commit_program(kvs, target, n, crc)));
 
-    commit_is_durable(g, s0, kvs, target, n, crc);
+    commit_is_durable(g, s0, kvs, target, live_slot, n, crc);
     capture_dom(lay, m0);
     capture_restore_roundtrip(lay, m0);
 

@@ -36,8 +36,8 @@ use crate::crash::{denote, epochs, is_crash_outcome, wf};
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
 use crate::protocol::{
-    clean, footprint, gen_at, gen_below, is_slot, live, live_footprint, other, other_involution,
-    recover, slots_wf, steady, steady_implies_live,
+    a_slot_is_sane, clean, distinct_slots_are_disjoint, footprint, gen_at, gen_below, is_live_at,
+    is_slot, live, live_footprint, recover, slots_wf, steady, steady_implies_live,
 };
 #[cfg(verus_only)]
 use crate::theorem::{commit_shape, crash_consistency};
@@ -291,6 +291,7 @@ pub proof fn payload_avoids_seal(g: Geom, kvs: Payload, target: Slot)
     ensures
         !kvs_keys(kvs).contains(target.seal),
 {
+    a_slot_is_sane(g, target);
 }
 
 /// The commit program really does have the shape [`crash_consistency`] assumes.
@@ -302,16 +303,18 @@ pub proof fn commit_establishes_shape(
     s0: Store<CellVal>,
     kvs: Payload,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
     requires
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
-        commit_shape(g, s0, commit_program(kvs, target, n, crc), target, n, crc),
+        commit_shape(g, s0, commit_program(kvs, target, n, crc), target, live_slot, n, crc),
         // Pin the payload epoch exactly, so callers can enumerate its lattice.
         epochs(commit_program(kvs, target, n, crc))[0] =~= kvs_delta(kvs),
 {
@@ -346,12 +349,14 @@ pub proof fn commit_is_crash_consistent(
     s0: Store<CellVal>,
     kvs: Payload,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
     requires
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
@@ -362,8 +367,8 @@ pub proof fn commit_is_crash_consistent(
                 denote(s0, commit_program(kvs, target, n, crc)),
             ),
 {
-    commit_establishes_shape(g, s0, kvs, target, n, crc);
-    crash_consistency(g, s0, commit_program(kvs, target, n, crc), target, n, crc);
+    commit_establishes_shape(g, s0, kvs, target, live_slot, n, crc);
+    crash_consistency(g, s0, commit_program(kvs, target, n, crc), target, live_slot, n, crc);
 }
 
 
@@ -386,21 +391,21 @@ pub proof fn commit_preserves_steady(
     s0: Store<CellVal>,
     kvs: Payload,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
     requires
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
         steady(g, denote(s0, commit_program(kvs, target, n, crc)), target, (n + 1) as nat),
 {
     let p = commit_program(kvs, target, n, crc);
-    let l = other(g, target);
-    other_involution(g, target);
-    commit_establishes_shape(g, s0, kvs, target, n, crc);
+    commit_establishes_shape(g, s0, kvs, target, live_slot, n, crc);
     crate::theorem::apply_two(s0, epochs(p));
 
     let s_new = denote(s0, p);
@@ -410,12 +415,21 @@ pub proof fn commit_preserves_steady(
     assert(epochs(p)[1].dom() =~= set![target.seal]);
     assert(gen_at(s_new, target.seal) == Some((n + 1) as nat));
 
-    // The live slot's seal is in neither epoch, so it still reads generation n —
-    // which is strictly below n + 1. A3 is what makes that comparison meaningful.
-    assert(!epochs(p)[0].dom().contains(l.seal));
-    assert(!epochs(p)[1].dom().contains(l.seal));
-    assert(gen_at(s_new, l.seal) == Some(n));
-    assert(gen_below(gen_at(s_new, l.seal), (n + 1) as nat));
+    // No other slot's seal is in either epoch, so each still reads whatever it read
+    // before — and each of those was already below n, hence below n + 1. A3 is what
+    // makes that comparison meaningful.
+    assert forall|o: Slot| is_slot(g, o) && o != target implies gen_below(
+        gen_at(s_new, o.seal),
+        (n + 1) as nat,
+    ) by {
+        distinct_slots_are_disjoint(g, target, o);
+        assert(!epochs(p)[0].dom().contains(o.seal));
+        assert(!epochs(p)[1].dom().contains(o.seal));
+        assert(gen_at(s_new, o.seal) == gen_at(s0, o.seal));
+        if o == live_slot {
+            assert(gen_at(s0, o.seal) == Some(n));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -442,12 +456,14 @@ pub proof fn commit_is_durable(
     s0: Store<CellVal>,
     kvs: Payload,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
     requires
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         distinct_keys(kvs),
         kvs_keys(kvs).subset_of(target.payload),
     ensures
@@ -465,8 +481,8 @@ pub proof fn commit_is_durable(
     let p = commit_program(kvs, target, n, crc);
     let s_new = denote(s0, p);
 
-    commit_establishes_shape(g, s0, kvs, target, n, crc);
-    commit_preserves_steady(g, s0, kvs, target, n, crc);
+    commit_establishes_shape(g, s0, kvs, target, live_slot, n, crc);
+    commit_preserves_steady(g, s0, kvs, target, live_slot, n, crc);
     steady_implies_live(g, s_new, target, (n + 1) as nat);
     crate::theorem::apply_two(s0, epochs(p));
     kvs_delta_dom(kvs);
@@ -569,6 +585,105 @@ pub proof fn commit_program_is_wf(g: Geom, kvs: Payload, target: Slot, n: nat, c
     payload_avoids_seal(g, kvs, target);
     assert(kvs_keys(kvs).disjoint(epochs(tail)[0].dom()));
     wf_prepend_writes(kvs, tail);
+}
+
+// ---------------------------------------------------------------------------
+// What N slots buy: a rollback window
+// ---------------------------------------------------------------------------
+
+/// **A commit destroys exactly one checkpoint — the one in the slot it targets.**
+///
+/// Every other slot comes through untouched: its seal, and every cell of its payload
+/// region. Nothing else in the protocol reaches outside the target.
+///
+/// With 2 slots this says the only other checkpoint dies on the next commit, so a
+/// machine that checkpoints its own corruption has exactly one commit in which to
+/// notice. With `N` slots it keeps `N - 1` older checkpoints, and the window to
+/// notice is `N - 1` commits.
+///
+/// Note what `steady` does *not* say: it says the store is **consistent**, and
+/// consistency says nothing about whether the contents are good. That is why a
+/// rollback window is worth having.
+pub proof fn a_commit_destroys_only_its_target(
+    g: Geom,
+    s0: Store<CellVal>,
+    kvs: Payload,
+    target: Slot,
+    live_slot: Slot,
+    n: nat,
+    crc: u64,
+    o: Slot,
+)
+    requires
+        is_slot(g, target),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+        is_slot(g, o),
+        o != target,
+    ensures
+        denote(s0, commit_program(kvs, target, n, crc)).restrict(footprint(o)) =~= s0.restrict(
+            footprint(o),
+        ),
+{
+    let p = commit_program(kvs, target, n, crc);
+    let s_new = denote(s0, p);
+
+    commit_establishes_shape(g, s0, kvs, target, live_slot, n, crc);
+    crate::theorem::apply_two(s0, epochs(p));
+    distinct_slots_are_disjoint(g, target, o);
+    a_slot_is_sane(g, target);
+
+    assert(s_new =~= override_(override_(s0, epochs(p)[0]), epochs(p)[1]));
+    assert_maps_equal!(s_new.restrict(footprint(o)), s0.restrict(footprint(o)), c => {
+        if footprint(o).contains(c) {
+            assert(!target.payload.contains(c));
+            assert(c != target.seal);
+            assert(!epochs(p)[0].dom().contains(c));
+            assert(!epochs(p)[1].dom().contains(c));
+        }
+    });
+}
+
+/// An older checkpoint stays readable across a commit that does not target it.
+///
+/// This is the rollback guarantee in the form a recovery would use: the seal is
+/// still there, still naming the same generation, so the slot can still be selected
+/// and restored.
+pub proof fn an_older_checkpoint_survives_a_commit(
+    g: Geom,
+    s0: Store<CellVal>,
+    kvs: Payload,
+    target: Slot,
+    live_slot: Slot,
+    n: nat,
+    crc: u64,
+    o: Slot,
+)
+    requires
+        is_slot(g, target),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
+        distinct_keys(kvs),
+        kvs_keys(kvs).subset_of(target.payload),
+        is_slot(g, o),
+        o != target,
+    ensures
+        gen_at(denote(s0, commit_program(kvs, target, n, crc)), o.seal) == gen_at(s0, o.seal),
+{
+    let p = commit_program(kvs, target, n, crc);
+    let s_new = denote(s0, p);
+
+    commit_establishes_shape(g, s0, kvs, target, live_slot, n, crc);
+    crate::theorem::apply_two(s0, epochs(p));
+    distinct_slots_are_disjoint(g, target, o);
+
+    assert(s_new =~= override_(override_(s0, epochs(p)[0]), epochs(p)[1]));
+    assert(!target.payload.contains(o.seal));
+    assert(o.seal != target.seal);
+    assert(!epochs(p)[0].dom().contains(o.seal));
+    assert(!epochs(p)[1].dom().contains(o.seal));
 }
 
 } // verus!

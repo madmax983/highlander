@@ -41,10 +41,11 @@ pub struct Slot {
     pub payload: BTreeSet<CellId>,
 }
 
+/// The checkpoint slots. Two is the minimum, and more gives a rollback window: a
+/// commit destroys exactly one checkpoint, the one in the slot it targets.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Geom {
-    pub a: Slot,
-    pub b: Slot,
+    pub slots: Vec<Slot>,
 }
 
 impl Slot {
@@ -58,16 +59,26 @@ impl Slot {
 
 impl Geom {
     pub fn slots_wf(&self) -> bool {
-        self.a.seal != self.b.seal
-            && !self.a.payload.contains(&self.a.seal)
-            && !self.b.payload.contains(&self.b.seal)
-            && !self.a.payload.contains(&self.b.seal)
-            && !self.b.payload.contains(&self.a.seal)
-            && self.a.payload.is_disjoint(&self.b.payload)
-    }
-
-    pub fn other<'g>(&'g self, sl: &Slot) -> &'g Slot {
-        if sl == &self.a { &self.b } else { &self.a }
+        if self.slots.len() < 2 {
+            return false;
+        }
+        for (i, x) in self.slots.iter().enumerate() {
+            if x.payload.contains(&x.seal) {
+                return false;
+            }
+            for (j, y) in self.slots.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                if x.seal == y.seal
+                    || x.payload.contains(&y.seal)
+                    || !x.payload.is_disjoint(&y.payload)
+                {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -101,19 +112,33 @@ pub fn gen_at(s: &Store, c: CellId) -> Option<u64> {
     }
 }
 
+/// The slot whose generation strictly dominates every other.
+///
+/// A tie yields `None` on purpose. Two slots at one generation cannot arise from a
+/// well-formed run, so a tie means the store is damaged — and there is nothing
+/// underneath this layer to catch a wrong guess between two equally plausible
+/// checkpoints.
 pub fn live<'g>(g: &'g Geom, s: &Store) -> Option<&'g Slot> {
-    match (gen_at(s, g.a.seal), gen_at(s, g.b.seal)) {
-        (None, None) => None,
-        (Some(_), None) => Some(&g.a),
-        (None, Some(_)) => Some(&g.b),
-        (Some(x), Some(y)) => {
-            if x >= y {
-                Some(&g.a)
-            } else {
-                Some(&g.b)
+    let mut best: Option<(&Slot, u64)> = None;
+    let mut tied = false;
+    for sl in &g.slots {
+        let Some(gn) = gen_at(s, sl.seal) else {
+            continue;
+        };
+        match best {
+            None => {
+                best = Some((sl, gn));
+                tied = false;
             }
+            Some((_, b)) if gn > b => {
+                best = Some((sl, gn));
+                tied = false;
+            }
+            Some((_, b)) if gn == b => tied = true,
+            Some(_) => {}
         }
     }
+    if tied { None } else { best.map(|(sl, _)| sl) }
 }
 
 /// §7.5 — projection onto the live checkpoint. Never writes.

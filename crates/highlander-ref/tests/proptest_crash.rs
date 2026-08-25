@@ -25,15 +25,25 @@ const SLOT_WIDTH: u64 = 6;
 
 fn geometry() -> Geom {
     Geom {
-        a: Slot {
-            seal: A_SEAL,
-            payload: (1..=SLOT_WIDTH).collect(),
-        },
-        b: Slot {
-            seal: B_SEAL,
-            payload: (101..=100 + SLOT_WIDTH).collect(),
-        },
+        slots: vec![
+            Slot {
+                seal: A_SEAL,
+                payload: (1..=SLOT_WIDTH).collect(),
+            },
+            Slot {
+                seal: B_SEAL,
+                payload: (101..=100 + SLOT_WIDTH).collect(),
+            },
+        ],
     }
+}
+
+fn slot_a(g: &Geom) -> Slot {
+    g.slots[0].clone()
+}
+
+fn slot_b(g: &Geom) -> Slot {
+    g.slots[1].clone()
 }
 
 /// A clean store: slot A sealed at `generation`, slot B entirely absent.
@@ -88,7 +98,7 @@ proptest! {
         let s0 = initial_store(generation, &live);
         prop_assert!(clean(&g, &s0));
 
-        let epochs = commit_epochs(&payload, &g.b, generation, 0, true);
+        let epochs = commit_epochs(&payload, &slot_b(&g), generation, 0, true);
         prop_assert_eq!(epochs.len(), 2, "with a barrier there are exactly two epochs");
 
         let old = recover(&g, &s0);
@@ -116,7 +126,7 @@ proptest! {
     ) {
         let g = geometry();
         let s0 = initial_store(generation, &live);
-        let epochs = commit_epochs(&payload, &g.b, generation, 0, true);
+        let epochs = commit_epochs(&payload, &slot_b(&g), generation, 0, true);
 
         for (k, epoch) in epochs.iter().enumerate() {
             let cells: BTreeSet<u64> = epoch.keys().copied().collect();
@@ -140,7 +150,7 @@ proptest! {
     ) {
         let g = geometry();
         let s0 = initial_store(generation, &live);
-        let epochs = commit_epochs(&payload, &g.b, generation, 0, true);
+        let epochs = commit_epochs(&payload, &slot_b(&g), generation, 0, true);
         let old = recover(&g, &s0);
 
         let cells: BTreeSet<u64> = epochs[0].keys().copied().collect();
@@ -180,7 +190,7 @@ proptest! {
         let mut n = generation;
 
         for (step, bytes) in runs.iter().enumerate() {
-            let target = if live_seal == A_SEAL { &g.b } else { &g.a };
+            let target = if live_seal == A_SEAL { slot_b(&g) } else { slot_a(&g) };
             let cells: Vec<u64> = target.payload.iter().copied().collect();
             let payload: Vec<(u64, Vec<u8>)> = bytes
                 .iter()
@@ -188,7 +198,7 @@ proptest! {
                 .map(|(i, b)| (cells[i], vec![*b]))
                 .collect();
 
-            let epochs = commit_epochs(&payload, target, n, 0, true);
+            let epochs = commit_epochs(&payload, &target, n, 0, true);
             let old = recover(&g, &s);
             let new = recover(&g, &denote(&s, &epochs));
 
@@ -233,7 +243,7 @@ proptest! {
     ) {
         let g = geometry();
         let s0 = initial_store(generation, &live_bytes);
-        let epochs = commit_epochs(&payload, &g.b, generation, 0, true);
+        let epochs = commit_epochs(&payload, &slot_b(&g), generation, 0, true);
         let r = recover(&g, &denote(&s0, &epochs));
 
         for (c, bytes) in &payload {
@@ -281,7 +291,7 @@ fn a_forgetful_recover_is_crash_consistent_but_loses_data() {
     let g = geometry();
     let s0 = initial_store(7, &[0; SLOT_WIDTH as usize]);
     let payload: Vec<(u64, Vec<u8>)> = (101..=106).map(|c| (c, vec![1u8])).collect();
-    let epochs = commit_epochs(&payload, &g.b, 7, 0, true);
+    let epochs = commit_epochs(&payload, &slot_b(&g), 7, 0, true);
 
     let old = recover_seal_only(&g, &s0);
     let new = recover_seal_only(&g, &denote(&s0, &epochs));
@@ -329,7 +339,7 @@ fn without_a_barrier_the_property_is_false() {
 
     let payload: Vec<(u64, Vec<u8>)> = (101..=106).map(|c| (c, vec![1u8])).collect();
 
-    let epochs = commit_epochs(&payload, &g.b, 7, 0, false);
+    let epochs = commit_epochs(&payload, &slot_b(&g), 7, 0, false);
     assert_eq!(
         epochs.len(),
         1,
@@ -559,7 +569,7 @@ proptest! {
                 _ => unreachable!("a capture writes only data"),
             })
             .collect();
-        let epochs = commit_epochs(&payload, &g.b, 7, 0, true);
+        let epochs = commit_epochs(&payload, &slot_b(&g), 7, 0, true);
 
         for (k, epoch) in epochs.iter().enumerate() {
             let cells: BTreeSet<u64> = epoch.keys().copied().collect();
@@ -607,4 +617,117 @@ fn an_overlapping_layout_loses_state() {
     // Cell 103 held memory byte 1. The register file wrote over it.
     assert_eq!(back.mem.get(&103), Some(&CellVal::Data(vec![8])));
     assert_eq!(m.mem.get(&103), Some(&CellVal::Data(vec![1])));
+}
+
+// ---------------------------------------------------------------------------
+// N slots — the rollback window
+// ---------------------------------------------------------------------------
+
+/// Three slots, each 4 cells wide.
+fn geometry_n(n: u64) -> Geom {
+    Geom {
+        slots: (0..n)
+            .map(|i| Slot {
+                seal: i * 10,
+                payload: (i * 10 + 1..=i * 10 + 4).collect(),
+            })
+            .collect(),
+    }
+}
+
+/// Fill slot `i` with a checkpoint at `generation`, whose payload is `mark`.
+fn seal_slot(s: &mut Store, g: &Geom, i: usize, generation: u64, mark: u8) {
+    let sl = &g.slots[i];
+    s.insert(sl.seal, CellVal::Seal { generation, crc: 0 });
+    for c in &sl.payload {
+        s.insert(*c, CellVal::Data(vec![mark]));
+    }
+}
+
+/// **What N slots buy.**
+///
+/// A commit destroys exactly one checkpoint: the one in the slot it targets. With
+/// 2 slots that is the only other checkpoint, so a machine that checkpoints its own
+/// corruption has one commit in which to notice. With N it has N - 1.
+///
+/// `commit::a_commit_destroys_only_its_target` proves this; here it is, running.
+#[test]
+fn a_commit_leaves_every_other_slot_untouched() {
+    let g = geometry_n(3);
+    assert!(g.slots_wf());
+
+    // Generations 5, 6 and 7 in slots 0, 1 and 2.
+    let mut s = Store::new();
+    seal_slot(&mut s, &g, 0, 5, b'a');
+    seal_slot(&mut s, &g, 1, 6, b'b');
+    seal_slot(&mut s, &g, 2, 7, b'c');
+    assert_eq!(live(&g, &s).map(|sl| sl.seal), Some(g.slots[2].seal));
+
+    // Commit generation 8 into the oldest slot, which is slot 0.
+    let target = g.slots[0].clone();
+    let payload: Vec<(u64, Vec<u8>)> = target.payload.iter().map(|c| (*c, vec![b'd'])).collect();
+    let epochs = commit_epochs(&payload, &target, 7, 0, true);
+    let after = denote(&s, &epochs);
+
+    assert_eq!(live(&g, &after).map(|sl| sl.seal), Some(g.slots[0].seal));
+
+    // Generation 6 and generation 7 are both still there, whole.
+    for i in [1usize, 2] {
+        let sl = &g.slots[i];
+        assert_eq!(
+            gen_at(&after, sl.seal),
+            gen_at(&s, sl.seal),
+            "slot {i} lost its seal"
+        );
+        for c in &sl.payload {
+            assert_eq!(after.get(c), s.get(c), "slot {i} lost cell {c}");
+        }
+    }
+
+    // Only the target changed.
+    assert_eq!(gen_at(&after, target.seal), Some(8));
+}
+
+/// The rollback window, stated as a count.
+///
+/// After any number of commits that always target the oldest slot, an N-slot store
+/// holds N distinct generations. With 2 slots that is 2: the current one and one
+/// older. Losing confidence in the current checkpoint leaves exactly N - 1 to fall
+/// back to.
+#[test]
+fn n_slots_keep_n_generations() {
+    for n in 2u64..=5 {
+        let g = geometry_n(n);
+        assert!(g.slots_wf());
+
+        let mut s = Store::new();
+        for i in 0..n as usize {
+            seal_slot(&mut s, &g, i, 100 + i as u64, b'0' + i as u8);
+        }
+
+        // Commit repeatedly into whichever slot is oldest.
+        for (round, generation) in (100 + n - 1..100 + n + 7).enumerate() {
+            let oldest = (0..n as usize)
+                .min_by_key(|i| gen_at(&s, g.slots[*i].seal).unwrap())
+                .expect("slots exist");
+            let target = g.slots[oldest].clone();
+            let payload: Vec<(u64, Vec<u8>)> = target
+                .payload
+                .iter()
+                .map(|c| (*c, vec![round as u8]))
+                .collect();
+            let epochs = commit_epochs(&payload, &target, generation, 0, true);
+            s = denote(&s, &epochs);
+
+            // Every slot still holds a distinct generation, so the window is full.
+            let mut gens: Vec<u64> = g
+                .slots
+                .iter()
+                .map(|sl| gen_at(&s, sl.seal).unwrap())
+                .collect();
+            gens.sort_unstable();
+            gens.dedup();
+            assert_eq!(gens.len(), n as usize, "the rollback window shrank");
+        }
+    }
 }

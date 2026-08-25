@@ -30,6 +30,12 @@ A probabilistic test gives protection if the hardware does not keep them.
 | **A2** | All writes before a barrier land before all writes after the barrier. |
 | **A4** | The seal is in one cell only. |
 
+The store has `N` checkpoint slots, and `N` is 2 or more. A commit writes to a slot
+that is not live, thus each other checkpoint survives the commit
+(`commit::a_commit_destroys_only_its_target`). With 2 slots, a machine that writes a
+checkpoint of its own corrupt state has 1 commit in which to observe the fault. With
+`N` slots it has `N - 1`.
+
 If A1, A2 and A4 are true, then each possible crash during a commit gives one of two
 results. The result is the old checkpoint or the new checkpoint. No result is a
 mixture of the two, and no other result is possible. Verus does a machine check of

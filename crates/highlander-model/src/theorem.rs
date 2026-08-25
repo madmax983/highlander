@@ -42,7 +42,7 @@ use crate::crash::{
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
 use crate::protocol::{
-    clean, footprint, gen_at, is_slot, live, live_footprint, other, other_involution, recover,
+    clean, distinct_slots_are_disjoint, footprint, gen_at, is_slot, live, live_footprint, recover,
     slots_wf, steady, steady_implies_live,
 };
 
@@ -97,14 +97,16 @@ pub open spec fn commit_shape(
     s0: Store<CellVal>,
     p: Seq<crate::crash::Op<CellVal>>,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 ) -> bool {
     &&& is_slot(g, target)
+    &&& live_slot != target
     // The machine invariant, not a pristine store: the live slot holds generation
     // `n` and the target holds something strictly older, or nothing. See
     // `protocol::steady` for why `clean` was too strong to survive a commit.
-    &&& steady(g, s0, other(g, target), n)
+    &&& steady(g, s0, live_slot, n)
     // Two epochs — payload, then seal. A2 (the barrier) is what makes this 2 and not 1.
     &&& epochs(p).len() == 2
     // The payload writes land only inside the target slot's own region (§7.5 rule 2).
@@ -127,19 +129,22 @@ pub proof fn seal_absent_recovers_old(
     g: Geom,
     s0: Store<CellVal>,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     delta: Delta<CellVal>,
 )
     requires
         is_slot(g, target),
-        steady(g, s0, other(g, target), n),
+        live_slot != target,
+        steady(g, s0, live_slot, n),
         delta.dom().subset_of(target.payload),
     ensures
         recover(g, override_(s0, delta)) =~= recover(g, s0),
 {
-    let l = other(g, target);
+    let l = live_slot;
     let s2 = override_(s0, delta);
-    other_involution(g, target);
+    distinct_slots_are_disjoint(g, target, l);
+    crate::protocol::a_slot_is_sane(g, target);
 
     // The payload region touches neither seal, so neither generation moves...
     assert(!delta.dom().contains(l.seal));
@@ -150,6 +155,18 @@ pub proof fn seal_absent_recovers_old(
     // ...so the invariant survives the partial write, and recovery still selects
     // the same slot. Note this needs only that the target is *older*, not that it
     // is absent — which is what lets a second commit work at all.
+    assert forall|o: Slot| is_slot(g, o) && o != l implies crate::protocol::gen_below(
+        gen_at(s2, o.seal),
+        n,
+    ) by {
+        if o == target {
+            crate::protocol::a_slot_is_sane(g, target);
+        } else {
+            distinct_slots_are_disjoint(g, target, o);
+        }
+        assert(!delta.dom().contains(o.seal));
+        assert(gen_at(s2, o.seal) == gen_at(s0, o.seal));
+    }
     assert(steady(g, s2, l, n));
     steady_implies_live(g, s0, l, n);
     steady_implies_live(g, s2, l, n);
@@ -171,13 +188,14 @@ pub proof fn crash_case(
     s0: Store<CellVal>,
     p: Seq<crate::crash::Op<CellVal>>,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
     k: int,
     sigma: Delta<CellVal>,
 )
     requires
-        commit_shape(g, s0, p, target, n, crc),
+        commit_shape(g, s0, p, target, live_slot, n, crc),
         0 <= k < epochs(p).len(),
         sub_delta(sigma, epochs(p)[k]),
     ensures
@@ -197,7 +215,7 @@ pub proof fn crash_case(
         assert(prefix_state(s0, p, 0) =~= s0);
         assert(sigma.dom().subset_of(e0.dom()));
         assert(sigma.dom().subset_of(target.payload));
-        seal_absent_recovers_old(g, s0, target, n, sigma);
+        seal_absent_recovers_old(g, s0, target, live_slot, n, sigma);
     } else {
         // Crash in the seal epoch: A4 + A1 give a two-point lattice.
         assert(k == 1);
@@ -212,7 +230,7 @@ pub proof fn crash_case(
             // Nothing of the seal landed — indistinguishable from a payload crash
             // in which everything landed.
             assert(crash_at(s0, p, 1, sigma) =~= override_(s0, e0));
-            seal_absent_recovers_old(g, s0, target, n, e0);
+            seal_absent_recovers_old(g, s0, target, live_slot, n, e0);
         } else {
             // The seal landed — this is exactly the completed commit.
             assert(sigma =~= e1);
@@ -235,11 +253,12 @@ pub proof fn crash_consistency(
     s0: Store<CellVal>,
     p: Seq<crate::crash::Op<CellVal>>,
     target: Slot,
+    live_slot: Slot,
     n: nat,
     crc: u64,
 )
     requires
-        commit_shape(g, s0, p, target, n, crc),
+        commit_shape(g, s0, p, target, live_slot, n, crc),
     ensures
         forall|s2: Store<CellVal>|
             is_crash_outcome(s0, p, s2) ==> recover(g, s2) =~= recover(g, s0) || recover(g, s2)
@@ -254,7 +273,7 @@ pub proof fn crash_consistency(
                 &&& sub_delta(sigma, epochs(p)[k])
                 &&& s2 =~= crash_at(s0, p, k, sigma)
             };
-        crash_case(g, s0, p, target, n, crc, kw.0, kw.1);
+        crash_case(g, s0, p, target, live_slot, n, crc, kw.0, kw.1);
     }
 }
 

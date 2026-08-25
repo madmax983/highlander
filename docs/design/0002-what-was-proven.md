@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the complete ladder — 106 verified, 0 errors, 7 gates.
+**Status:** Correct for the complete ladder, on N slots — 112 verified, 0 errors, 7 gates.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -543,3 +543,80 @@ Rung 4 needs an answer. Rung 3 does not.
 - The registers of the checkpoint writer itself. See the mechanism boundary above.
 - Any statement about the order of the capture. `capture` is one function of the
   machine state, thus it describes one instant. Rung 2 gives that instant.
+
+---
+
+## 12. N slots
+
+The design doc has 2 slots throughout, and §7.1 argues for 2 against an append-only
+log. The artifact now has `N`, and `N ≥ 2`.
+
+### What changed
+
+| Before | After |
+|---|---|
+| `Geom { a, b }` | `Geom { slots: Seq<Slot> }` |
+| `other(g, sl)` | an explicit live-slot parameter on each lemma |
+| `live` compares 2 generations | `live` is the slot that strictly dominates every other |
+| `steady` names the other slot | `steady` quantifies over each other slot |
+
+`other(g, target)` was the only place that assumed there were exactly 2 slots. Each
+lemma that used it now takes the live slot as an argument, with the condition that
+it is a slot and that it is not the target. The rest of the development did not
+change.
+
+### Election safety arrives without an election
+
+`is_live_at(g, s, sl, n)` says that `sl` holds generation `n` and each other slot
+holds something older, or nothing. `at_most_one_live_slot` shows the property holds
+for at most 1 slot.
+
+That is Raft's **election safety**, and there is no protocol. Raft needs one because
+its voters cannot see each other, thus they must agree by exchange. Here there is 1
+reader, and it reads each slot. The property follows from the order on generations,
+which is A3 again.
+
+The rest of the mapping also holds: a generation is a term, a seal is a commit
+record, and "the highest term wins" is `live`. But the machinery of Raft — quorums,
+heartbeats, randomised timeouts, recovery from a split vote — answers a question
+about partition, and slots on 1 device do not partition. That machinery becomes
+necessary when the slots are on different machines, and not before.
+
+### A tie gives no live slot
+
+2 slots at 1 generation cannot occur in a well-formed run, because a commit writes
+`max + 1`. Thus a tie means the store is damaged.
+
+`live` returns `None` for a tie. §2 says there is nothing underneath this layer, and
+a layer at the bottom that guesses between 2 equally probable checkpoints is worse
+than a layer that declines to guess. Each theorem holds, because each theorem has
+`steady` as a condition and `steady` excludes a tie.
+
+### The reason for N slots: a window
+
+`a_commit_destroys_only_its_target` shows that a commit changes 1 slot and no other
+slot. Each other seal, and each other payload cell, is the same after the commit as
+before it. `an_older_checkpoint_survives_a_commit` states the same result in the form
+a recovery uses.
+
+With 2 slots, the only other checkpoint dies at the next commit. Thus a machine that
+writes a checkpoint of its own corrupt state has exactly 1 commit in which to
+observe the fault. With `N` slots it has `N - 1`.
+
+**`steady` says the store is consistent. It does not say the contents are good.**
+That difference is the reason a window has value, and the difference is not
+something the proof can remove.
+
+The reference implementation shows the window in operation:
+`a_commit_leaves_every_other_slot_untouched` and `n_slots_keep_n_generations`, for
+2 to 5 slots.
+
+### What N slots do not give
+
+- Protection against the loss of a device. Each slot is on the same store, thus one
+  failure of the medium takes all of them. Replication across devices answers that
+  question, and it needs a different failure model: A1 and A2 are promises about 1
+  device.
+- A policy for the choice of target. The theorem needs only that the target is not
+  live. A commit to the oldest slot gives the largest window, and the model does not
+  require it.

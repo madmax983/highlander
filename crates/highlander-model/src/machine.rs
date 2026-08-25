@@ -230,7 +230,7 @@ pub proof fn page_tables_are_ordinary_memory(lay: Layout, m: Machine, pt: Set<Ce
 
 /// The cells the checkpoint machinery owns. They are not part of any machine.
 pub open spec fn mechanism_cells(g: Geom) -> Set<CellId> {
-    set![g.a.seal, g.b.seal]
+    g.slots.map_values(|sl: crate::protocol::Slot| sl.seal).to_set()
 }
 
 pub open spec fn machine_outside_mechanism(lay: Layout, g: Geom) -> bool {

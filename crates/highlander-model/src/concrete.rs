@@ -34,7 +34,7 @@ use crate::crash::{crash_at, crash_outcome_intro, epochs, is_crash_outcome, sub_
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
 use crate::protocol::{
-    clean, clean_implies_steady, footprint, gen_at, is_slot, live, other, recover, slots_wf,
+    clean, clean_implies_steady, footprint, gen_at, is_live_at, is_slot, live, recover, slots_wf,
     steady, steady_implies_live,
 };
 #[cfg(verus_only)]
@@ -53,7 +53,7 @@ pub open spec fn slot_b() -> Slot {
 }
 
 pub open spec fn geom() -> Geom {
-    Geom { a: slot_a(), b: slot_b() }
+    Geom { slots: seq![slot_a(), slot_b()] }
 }
 
 pub open spec fn old_byte() -> CellVal {
@@ -81,9 +81,24 @@ pub proof fn geometry_is_sane()
     ensures
         slots_wf(geom()),
         is_slot(geom(), slot_b()),
-        other(geom(), slot_b()) == slot_a(),
+        is_slot(geom(), slot_a()),
 {
+    assert(geom().slots[0] == slot_a());
+    assert(geom().slots[1] == slot_b());
     assert(slot_a().payload.disjoint(slot_b().payload));
+}
+
+/// This geometry has exactly two slots, so `is_slot` enumerates.
+pub proof fn only_two_slots(sl: Slot)
+    requires
+        is_slot(geom(), sl),
+    ensures
+        sl == slot_a() || sl == slot_b(),
+{
+    let i = choose|i: int| 0 <= i < geom().slots.len() && geom().slots[i] == sl;
+    assert(geom().slots.len() == 2);
+    assert(geom().slots[0] == slot_a());
+    assert(geom().slots[1] == slot_b());
 }
 
 pub proof fn initial_store_is_clean()
@@ -97,7 +112,14 @@ pub proof fn initial_store_is_clean()
     assert(gen_at(s, 0nat) == Some(7nat));
     assert(!s.dom().contains(3nat));
     assert(gen_at(s, 3nat) is None);
-    assert(live(geom(), s) == Some(slot_a()));
+    assert forall|o: Slot| is_slot(geom(), o) && o != slot_a() implies crate::protocol::gen_below(
+        gen_at(s, o.seal),
+        7nat,
+    ) by {
+        only_two_slots(o);
+    }
+    assert(is_live_at(geom(), s, slot_a(), 7nat));
+    steady_implies_live(geom(), s, slot_a(), 7);
     assert_sets_equal!(crate::protocol::live_footprint(geom(), s), set![0nat, 1nat, 2nat]);
     assert_maps_equal!(recover(geom(), s), s);
 }
@@ -141,7 +163,7 @@ pub proof fn every_lattice_point_recovers_cleanly()
     initial_store_is_clean();
     payload_is_wellformed();
 
-    commit_establishes_shape(g, s0, kvs, slot_b(), 7, 0);
+    commit_establishes_shape(g, s0, kvs, slot_b(), slot_a(), 7, 0);
 
     let e_payload = epochs(p)[0];
     let e_seal = epochs(p)[1];
@@ -172,7 +194,7 @@ pub proof fn every_lattice_point_recovers_cleanly()
     crash_outcome_intro(s0, p, 1, e_seal);
 
     // --- and the general theorem covers all six ----------------------------
-    commit_is_crash_consistent(g, s0, kvs, slot_b(), 7, 0);
+    commit_is_crash_consistent(g, s0, kvs, slot_b(), slot_a(), 7, 0);
 }
 
 /// The new checkpoint really is generation 8, and it really is in slot B.
@@ -191,7 +213,7 @@ pub proof fn the_two_states_are_distinct()
     geometry_is_sane();
     initial_store_is_clean();
     payload_is_wellformed();
-    commit_establishes_shape(g, s0, kvs, slot_b(), 7, 0);
+    commit_establishes_shape(g, s0, kvs, slot_b(), slot_a(), 7, 0);
 
     let sN = crate::crash::denote(s0, p);
     crate::theorem::apply_two(s0, epochs(p));
@@ -199,7 +221,14 @@ pub proof fn the_two_states_are_distinct()
 
     assert(gen_at(sN, 3nat) == Some(8nat));
     assert(gen_at(sN, 0nat) == Some(7nat));
-    assert(live(g, sN) == Some(slot_b()));
+    assert forall|o: Slot| is_slot(g, o) && o != slot_b() implies crate::protocol::gen_below(
+        gen_at(sN, o.seal),
+        8nat,
+    ) by {
+        only_two_slots(o);
+    }
+    assert(is_live_at(g, sN, slot_b(), 8nat));
+    steady_implies_live(g, sN, slot_b(), 8);
     assert(recover(g, sN).dom().contains(3nat));
     assert(!recover(g, s0).dom().contains(3nat));
 }
@@ -246,13 +275,13 @@ pub proof fn a_second_commit_is_also_safe()
     clean_implies_steady(g, s0, slot_a(), 7);
 
     // Commit 1: into slot B, generation 8.
-    commit_preserves_steady(g, s0, payload(), slot_b(), 7, 0);
+    commit_preserves_steady(g, s0, payload(), slot_b(), slot_a(), 7, 0);
     let s1 = crate::crash::denote(s0, commit_program(payload(), slot_b(), 7, 0));
     assert(steady(g, s1, slot_b(), 8));
 
     // Slot A is still sealed at generation 7, and its payload is still present, so
     // the store is no longer clean — and never will be again.
-    commit_establishes_shape(g, s0, payload(), slot_b(), 7, 0);
+    commit_establishes_shape(g, s0, payload(), slot_b(), slot_a(), 7, 0);
     let p1 = commit_program(payload(), slot_b(), 7, 0);
     crate::theorem::apply_two(s0, epochs(p1));
     assert(s1 =~= override_(override_(s0, epochs(p1)[0]), epochs(p1)[1]));
@@ -267,8 +296,8 @@ pub proof fn a_second_commit_is_also_safe()
     assert(!clean(g, s1));
 
     // Commit 2: into slot A, generation 9 — over the top of the old seal.
-    commit_is_crash_consistent(g, s1, payload_a(), slot_a(), 8, 0);
-    commit_preserves_steady(g, s1, payload_a(), slot_a(), 8, 0);
+    commit_is_crash_consistent(g, s1, payload_a(), slot_a(), slot_b(), 8, 0);
+    commit_preserves_steady(g, s1, payload_a(), slot_a(), slot_b(), 8, 0);
     let s2 = crate::crash::denote(s1, commit_program(payload_a(), slot_a(), 8, 0));
     assert(steady(g, s2, slot_a(), 9));
 }
@@ -299,7 +328,7 @@ pub proof fn a_two_step_run_is_safe()
 
 /// Slot B first, then slot A. The target alternates; that is ping-pong.
 pub open spec fn two_commits() -> Seq<Step> {
-    seq![(payload(), 0u64), (payload_a(), 0u64)]
+    seq![(payload(), 0u64, slot_b()), (payload_a(), 0u64, slot_a())]
 }
 
 } // verus!

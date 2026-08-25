@@ -40,12 +40,17 @@ use crate::commit::{
 use crate::crash::{denote, is_crash_outcome};
 use crate::protocol::{CellVal, Geom, Slot};
 #[cfg(verus_only)]
-use crate::protocol::{other, other_involution, recover, steady};
+use crate::protocol::{is_slot, recover, steady};
 
 verus! {
 
-/// One commit's inputs: its payload, and the CRC to stamp into the seal.
-pub type Step = (Payload, u64);
+/// One commit's inputs: its payload, the CRC to stamp into the seal, and the slot
+/// it targets.
+///
+/// With two slots the target was forced — it was the slot that was not live. With
+/// `N` it is a choice, so a step has to say. Targeting the oldest slot is what
+/// gives a rollback window; the theorem needs only that the target is not live.
+pub type Step = (Payload, u64, Slot);
 
 /// Run a sequence of commits from a steady state.
 ///
@@ -63,7 +68,7 @@ pub open spec fn run(
     if cs.len() == 0 {
         (s, l, n)
     } else {
-        let target = other(g, l);
+        let target = cs[0].2;
         let p = commit_program(cs[0].0, target, n, cs[0].1);
         run(g, denote(s, p), target, (n + 1) as nat, cs.drop_first())
     }
@@ -79,7 +84,9 @@ pub open spec fn payloads_wf(g: Geom, l: Slot, cs: Seq<Step>) -> bool
     if cs.len() == 0 {
         true
     } else {
-        let target = other(g, l);
+        let target = cs[0].2;
+        &&& is_slot(g, target)
+        &&& target != l
         &&& distinct_keys(cs[0].0)
         &&& kvs_keys(cs[0].0).subset_of(target.payload)
         &&& payloads_wf(g, target, cs.drop_first())
@@ -99,9 +106,8 @@ pub proof fn run_preserves_steady(g: Geom, s: Store<CellVal>, l: Slot, n: nat, c
 {
     if cs.len() == 0 {
     } else {
-        let target = other(g, l);
-        other_involution(g, l);
-        commit_preserves_steady(g, s, cs[0].0, target, n, cs[0].1);
+        let target = cs[0].2;
+        commit_preserves_steady(g, s, cs[0].0, target, l, n, cs[0].1);
         let s1 = denote(s, commit_program(cs[0].0, target, n, cs[0].1));
         run_preserves_steady(g, s1, target, (n + 1) as nat, cs.drop_first());
     }
@@ -129,7 +135,7 @@ pub proof fn run_is_crash_consistent(g: Geom, s: Store<CellVal>, l: Slot, n: nat
         steady(g, run(g, s, l, n, cs).0, run(g, s, l, n, cs).1, run(g, s, l, n, cs).2),
         // 2. and 3., for a non-empty sequence
         cs.len() > 0 ==> ({
-            let target = other(g, l);
+            let target = cs[0].2;
             let p = commit_program(cs[0].0, target, n, cs[0].1);
             // 2. this commit is crash consistent
             &&& forall|s2: Store<CellVal>|
@@ -142,10 +148,9 @@ pub proof fn run_is_crash_consistent(g: Geom, s: Store<CellVal>, l: Slot, n: nat
 {
     run_preserves_steady(g, s, l, n, cs);
     if cs.len() > 0 {
-        let target = other(g, l);
-        other_involution(g, l);
-        commit_is_crash_consistent(g, s, cs[0].0, target, n, cs[0].1);
-        commit_preserves_steady(g, s, cs[0].0, target, n, cs[0].1);
+        let target = cs[0].2;
+        commit_is_crash_consistent(g, s, cs[0].0, target, l, n, cs[0].1);
+        commit_preserves_steady(g, s, cs[0].0, target, l, n, cs[0].1);
     }
 }
 

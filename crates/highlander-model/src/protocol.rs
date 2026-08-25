@@ -55,34 +55,67 @@ pub struct Slot {
     pub payload: Set<CellId>,
 }
 
-/// The two slots. Ping-pong, not one-slot-with-extra-steps.
+/// The checkpoint slots. Two is the minimum, and more is useful.
+///
+/// With two slots a commit destroys the only other checkpoint, so a machine that
+/// checkpoints its own corruption has one commit in which to notice before the last
+/// good state is gone. With `N` slots it has `N - 1`, and
+/// [`crate::commit::a_commit_destroys_only_its_target`] is what makes that true.
 pub struct Geom {
-    pub a: Slot,
-    pub b: Slot,
+    pub slots: Seq<Slot>,
+}
+
+pub open spec fn is_slot(g: Geom, sl: Slot) -> bool {
+    exists|i: int| 0 <= i < g.slots.len() && #[trigger] g.slots[i] == sl
 }
 
 /// The slots must genuinely not overlap. This is §7.5's rule 2 in geometric form —
 /// the third appearance of `•`'s definedness condition (§4.4).
 pub open spec fn slots_wf(g: Geom) -> bool {
-    &&& g.a.seal != g.b.seal
-    &&& !g.a.payload.contains(g.a.seal)
-    &&& !g.b.payload.contains(g.b.seal)
-    &&& !g.a.payload.contains(g.b.seal)
-    &&& !g.b.payload.contains(g.a.seal)
-    &&& g.a.payload.disjoint(g.b.payload)
+    &&& g.slots.len() >= 2
+    &&& forall|i: int| #![trigger g.slots[i]]
+        0 <= i < g.slots.len() ==> !g.slots[i].payload.contains(g.slots[i].seal)
+    &&& forall|i: int, j: int| #![trigger g.slots[i], g.slots[j]]
+        0 <= i < g.slots.len() && 0 <= j < g.slots.len() && i != j ==> {
+            &&& g.slots[i].seal != g.slots[j].seal
+            &&& !g.slots[i].payload.contains(g.slots[j].seal)
+            &&& g.slots[i].payload.disjoint(g.slots[j].payload)
+        }
 }
 
-pub open spec fn is_slot(g: Geom, sl: Slot) -> bool {
-    sl == g.a || sl == g.b
+/// Distinct slots share nothing. Downstream proofs use this rather than unfolding
+/// `slots_wf`, which keeps the index reasoning in one place.
+pub proof fn distinct_slots_are_disjoint(g: Geom, x: Slot, y: Slot)
+    requires
+        slots_wf(g),
+        is_slot(g, x),
+        is_slot(g, y),
+        x != y,
+    ensures
+        x.seal != y.seal,
+        !x.payload.contains(y.seal),
+        !y.payload.contains(x.seal),
+        x.payload.disjoint(y.payload),
+        !x.payload.contains(x.seal),
+        !y.payload.contains(y.seal),
+{
+    let i = choose|i: int| 0 <= i < g.slots.len() && g.slots[i] == x;
+    let j = choose|j: int| 0 <= j < g.slots.len() && g.slots[j] == y;
+    assert(i != j);
+    assert(!g.slots[i].payload.contains(g.slots[i].seal));
+    assert(!g.slots[j].payload.contains(g.slots[j].seal));
 }
 
-/// The slot that is not `sl`.
-pub open spec fn other(g: Geom, sl: Slot) -> Slot {
-    if sl == g.a {
-        g.b
-    } else {
-        g.a
-    }
+/// A slot shares nothing with itself either — its seal is outside its payload.
+pub proof fn a_slot_is_sane(g: Geom, x: Slot)
+    requires
+        slots_wf(g),
+        is_slot(g, x),
+    ensures
+        !x.payload.contains(x.seal),
+{
+    let i = choose|i: int| 0 <= i < g.slots.len() && g.slots[i] == x;
+    assert(!g.slots[i].payload.contains(g.slots[i].seal));
 }
 
 /// Everything a slot owns: its payload region plus its seal.
@@ -109,20 +142,66 @@ pub open spec fn gen_at(s: Store<CellVal>, c: CellId) -> Option<nat> {
     }
 }
 
-/// Which slot holds the live checkpoint: the one with the greater generation,
-/// where absent ranks below present. `None` means neither slot is sealed — an
-/// unformatted store.
+/// `sl` holds generation `n`, and every other slot holds something strictly older
+/// or nothing at all.
+///
+/// This is stated as a property rather than computed by a scan, because what every
+/// proof wants is the property. [`at_most_one_live_slot`] shows the property picks
+/// out at most one slot — which is Raft's *election safety*, arriving here without
+/// an election, because there is one reader and it can see every slot at once.
+pub open spec fn is_live_at(g: Geom, s: Store<CellVal>, sl: Slot, n: nat) -> bool {
+    &&& is_slot(g, sl)
+    &&& gen_at(s, sl.seal) == Some(n)
+    &&& forall|o: Slot| #![auto] is_slot(g, o) && o != sl ==> gen_below(gen_at(s, o.seal), n)
+}
+
+pub open spec fn is_live(g: Geom, s: Store<CellVal>, sl: Slot) -> bool {
+    exists|n: nat| #[trigger] is_live_at(g, s, sl, n)
+}
+
+/// Which slot holds the live checkpoint. `None` means no slot dominates: either the
+/// store is unformatted, or two slots claim the same generation.
+///
+/// **A tie yields `None` on purpose.** Two slots at one generation cannot arise from
+/// a well-formed run, so a tie means the store is damaged. §2's last row says there
+/// is nothing underneath this layer, and a bottom layer that guesses between two
+/// equally plausible checkpoints is worse than one that declines to.
 pub open spec fn live(g: Geom, s: Store<CellVal>) -> Option<Slot> {
-    match (gen_at(s, g.a.seal), gen_at(s, g.b.seal)) {
-        (None, None) => None,
-        (Some(_), None) => Some(g.a),
-        (None, Some(_)) => Some(g.b),
-        (Some(x), Some(y)) => if x >= y {
-            Some(g.a)
-        } else {
-            Some(g.b)
-        },
+    if exists|sl: Slot| is_live(g, s, sl) {
+        Some(choose|sl: Slot| is_live(g, s, sl))
+    } else {
+        None
     }
+}
+
+/// **Election safety.** At most one slot is live.
+///
+/// Raft needs a protocol for this because its voters cannot see each other. Here
+/// there is a single reader and it reads every slot, so the property is a
+/// consequence of the generations being totally ordered — A3 again.
+pub proof fn at_most_one_live_slot(g: Geom, s: Store<CellVal>, x: Slot, y: Slot)
+    requires
+        is_live(g, s, x),
+        is_live(g, s, y),
+    ensures
+        x == y,
+{
+    let nx = choose|n: nat| is_live_at(g, s, x, n);
+    let ny = choose|n: nat| is_live_at(g, s, y, n);
+    if x != y {
+        assert(gen_below(gen_at(s, y.seal), nx));
+        assert(gen_below(gen_at(s, x.seal), ny));
+    }
+}
+
+pub proof fn live_is_the_live_slot(g: Geom, s: Store<CellVal>, sl: Slot)
+    requires
+        live(g, s) == Some(sl),
+    ensures
+        is_live(g, s, sl),
+{
+    let c = choose|x: Slot| is_live(g, s, x);
+    assert(is_live(g, s, c));
 }
 
 pub open spec fn live_footprint(g: Geom, s: Store<CellVal>) -> Set<CellId> {
@@ -198,22 +277,7 @@ pub open spec fn gen_below(x: Option<nat>, n: nat) -> bool {
 /// incremental checkpoints will depend on.
 pub open spec fn steady(g: Geom, s: Store<CellVal>, l: Slot, n: nat) -> bool {
     &&& slots_wf(g)
-    &&& is_slot(g, l)
-    &&& gen_at(s, l.seal) == Some(n)
-    &&& gen_below(gen_at(s, other(g, l).seal), n)
-}
-
-/// There are two slots, and they are different slots.
-pub proof fn other_involution(g: Geom, sl: Slot)
-    requires
-        slots_wf(g),
-        is_slot(g, sl),
-    ensures
-        is_slot(g, other(g, sl)),
-        other(g, other(g, sl)) == sl,
-        other(g, sl) != sl,
-{
-    assert(g.a != g.b);
+    &&& is_live_at(g, s, l, n)
 }
 
 /// A steady store recovers to the slot the invariant names.
@@ -223,7 +287,9 @@ pub proof fn steady_implies_live(g: Geom, s: Store<CellVal>, l: Slot, n: nat)
     ensures
         live(g, s) == Some(l),
 {
-    other_involution(g, l);
+    assert(is_live(g, s, l));
+    let c = choose|sl: Slot| is_live(g, s, sl);
+    at_most_one_live_slot(g, s, c, l);
 }
 
 /// The old precondition implies the new one, so `steady` is strictly more general.
@@ -238,12 +304,14 @@ pub proof fn clean_implies_steady(g: Geom, s: Store<CellVal>, l: Slot, n: nat)
     ensures
         steady(g, s, l, n),
 {
-    other_involution(g, l);
-    // Clean means the store holds nothing outside the live footprint, and the other
-    // slot's seal is outside it. So that seal is absent, not merely older.
+    // Clean means the store holds nothing outside the live footprint, and every
+    // other slot's seal is outside it. So those seals are absent, not merely older.
     assert(live_footprint(g, s) =~= footprint(l));
-    assert(!footprint(l).contains(other(g, l).seal));
-    assert(!s.dom().contains(other(g, l).seal));
+    assert forall|o: Slot| is_slot(g, o) && o != l implies gen_below(gen_at(s, o.seal), n) by {
+        distinct_slots_are_disjoint(g, l, o);
+        assert(!footprint(l).contains(o.seal));
+        assert(!s.dom().contains(o.seal));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -262,22 +330,30 @@ pub proof fn live_stable(g: Geom, s: Store<CellVal>)
     match live(g, s) {
         None => {
             assert(live_footprint(g, s) =~= Set::<CellId>::empty());
-            assert_maps_equal!(r, unit::<CellVal>());
-            assert(gen_at(r, g.a.seal) is None);
-            assert(gen_at(r, g.b.seal) is None);
+            assert_maps_equal!(r, Map::<CellId, CellVal>::empty());
+            assert forall|sl: Slot| !is_live(g, r, sl) by {
+                if is_live(g, r, sl) {
+                    let m = choose|m: nat| is_live_at(g, r, sl, m);
+                    assert(r.dom().contains(sl.seal));
+                }
+            }
         },
         Some(sl) => {
-            assert(footprint(sl).contains(sl.seal));
+            live_is_the_live_slot(g, s, sl);
+            let n = choose|n: nat| is_live_at(g, s, sl, n);
             assert(live_footprint(g, s) =~= footprint(sl));
-            if sl == g.a {
-                assert(gen_at(r, g.a.seal) == gen_at(s, g.a.seal));
-                assert(!footprint(g.a).contains(g.b.seal));
-                assert(gen_at(r, g.b.seal) is None);
-            } else {
-                assert(gen_at(r, g.b.seal) == gen_at(s, g.b.seal));
-                assert(!footprint(g.b).contains(g.a.seal));
-                assert(gen_at(r, g.a.seal) is None);
+            assert(footprint(sl).contains(sl.seal));
+            assert(gen_at(r, sl.seal) == gen_at(s, sl.seal));
+
+            // Recovery keeps only the live slot, so every other seal is gone.
+            assert forall|o: Slot| is_slot(g, o) && o != sl implies gen_at(r, o.seal) is None by {
+                distinct_slots_are_disjoint(g, sl, o);
+                assert(!footprint(sl).contains(o.seal));
             }
+            assert(is_live_at(g, r, sl, n));
+            assert(is_live(g, r, sl));
+            let c = choose|x: Slot| is_live(g, r, x);
+            at_most_one_live_slot(g, r, c, sl);
         },
     }
 }
