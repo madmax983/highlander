@@ -2,6 +2,25 @@
 
 > the kernel that does not die
 
+```
+                                                    //
+                                                   //
+                                                  //
+                                                 //
+                                                //
+                                               //
+                                              //
+                                             //
+                                            //
+                     THERE CAN             //
+                      BE ONLY ONE         //
+                                     ____//____
+                                         ||
+                                         ||
+                                         ||
+                                        (__)
+```
+
 Highlander is an orthogonally persistent kernel. The kernel writes the full state of
 the machine to stable storage as one atomic transaction. The full state includes
 each process, each register and each page. There is no file system, no save command
@@ -33,6 +52,11 @@ A checkpoint **tears** if it holds a mixture of the old data and the new data. G
 A1, A2 and A4, a checkpoint cannot tear. That is the first result, and each result
 below stands on it.
 
+The name is not only a joke. `protocol::at_most_one_live_slot` says that at most 1
+checkpoint slot is live, and `replication::agreement` says that 1 generation has 1
+checkpoint. A slot wins by holding the larger generation, and the loser stops being
+the checkpoint. There can be only one.
+
 A3 says the generation counter never wraps. It appears free, and it is not: each
 comparison of 2 generations uses it, and a counter that wrapped would make recovery
 select an older checkpoint. See §5a of `docs/design/0002-what-was-proven.md`.
@@ -46,7 +70,7 @@ select an older checkpoint. See §5a of `docs/design/0002-what-was-proven.md`.
 | Each commit of an unbounded sequence is crash consistent | `sequence::run_is_crash_consistent` | 1 |
 | Recovery is a closure operator, and it never writes | `protocol::recover_idempotent` | 1 |
 | A commit changes 1 slot, thus each older checkpoint survives it | `commit::a_commit_destroys_only_its_target` | 1 |
-| At most 1 slot is live | `protocol::at_most_one_live_slot` | 1 |
+| At most 1 slot is live — there can be only one | `protocol::at_most_one_live_slot` | 1 |
 | A snapshot taken while the machine runs is the memory at the instant it started | `checkpoint::concurrent_checkpoint_is_exact` | 2 |
 | A capture of a machine loses nothing | `machine::capture_restore_roundtrip` | 3 |
 | A machine survives a crash: capture, commit, crash, recover, restore | `checkpoint::a_machine_survives_a_crash` | 3 |
