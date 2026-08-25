@@ -623,12 +623,20 @@ The reference implementation shows the window in operation:
 
 ---
 
-## 13. Replication: not another rung
+## 13. Rung 6: replication
 
 Rungs 1 to 5 make 1 machine survive its own crash. Each axiom below them is a
 promise about **1 device**: A1 and A2 describe the behaviour of a single store when
-power fails. Replication does not extend that model. It replaces the failure model,
-thus it is not a rung, and `docs/design/0001` does not cover it.
+power fails. Rung 6 does not extend that model, it replaces the failure model. A
+partition is not a fault that A1 or A2 describes.
+
+**Rung 6 is the first rung that is not complete.** Its safety properties are proven
+and its liveness is not attempted. §9 of the design doc marks it `◐` for that
+reason. An earlier version of this document argued that replication was not a rung
+at all, on the ground that it changes the failure model. That distinction is real,
+but it is not a rule about names: rung 5 already crossed the boundary of the
+machine, because §8 is a statement about the outside world. The property that
+separates rung 6 from the rungs below it is that rung 6 is unfinished.
 
 ### What changes
 

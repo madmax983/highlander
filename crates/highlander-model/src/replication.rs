@@ -1,10 +1,13 @@
-//! Beyond the ladder — replication across nodes.
+//! Rung 6 — replication across nodes.
 //!
 //! Rungs 1 to 5 make one machine survive its own crash. Every axiom they rest on is
 //! a promise about **one device**: A1 and A2 describe how a single store behaves
-//! when power fails. Replication is not another rung, because it does not extend
-//! that model. It replaces the failure model, and it needs facts the earlier rungs
-//! never needed.
+//! when power fails. Rung 6 does not extend that model — it replaces the failure
+//! model, because a partition is not a fault A1 or A2 describes.
+//!
+//! **This is the first rung that is not finished.** Safety is proven below;
+//! liveness is not attempted, and for a cluster that is half the design rather than
+//! a footnote. The design doc's ladder marks it `◐` for exactly that reason.
 //!
 //! # What actually changes
 //!

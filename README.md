@@ -211,11 +211,14 @@ shows that a forgetful `recover` passes the full lattice and still loses each
 committed cell. A third test shows that the snapshot moves away from the start state
 if the copy is absent.
 
-## Beyond the ladder: replication
+## Rung 6: replication
 
-Each rung rests on a promise about 1 device. A1 and A2 describe the behaviour of a
-single store when power fails. Replication replaces that failure model, thus it is
-not a rung.
+Each rung below rests on a promise about 1 device. A1 and A2 describe the behaviour
+of a single store when power fails. Rung 6 replaces that failure model, because a
+partition is not a fault A1 or A2 describes.
+
+**This is the first rung that is not finished.** Safety is proven and liveness is
+not attempted.
 
 On 1 device, `live` is a function of the store: 1 reader examines each slot. Across
 a cluster no node sees each replica, and no node can separate a peer that is slow
@@ -239,13 +242,17 @@ properties a protocol must keep.
 
 | Rung | Deliverable | Status |
 |---|---|---|
-| **1** | verified checkpoint commit and recover, on the abstract cell model | ✅ |
+| **1** | **verified checkpoint commit and recover, on the abstract cell model** | ✅ |
 | **2** | **copy-on-write page records, to prevent a stop of the full machine** | ✅ |
 | **3** | **capture of the true machine state (registers, page tables)** | ✅ |
 | **4** | **continuation of one simple process after a hard reset** | ✅ |
 | **5** | **I/O journal at the boundary** | ✅ |
+| **6** | **replication across machines** | ◐ safety proven, liveness not attempted |
 
-Each rung has value alone.
+Rungs 1 to 5 are complete, and each has value alone. Rung 6 is marked `◐` because
+its liveness half is not attempted: a partition stops progress for as long as it
+lasts. For 1 machine, liveness is a question of speed. For a cluster it is half the
+design.
 
 Rung 4 starts the machine again. `process::replay_follows_the_same_trajectory`
 shows that a crash costs work and changes nothing else: given the same inputs, the

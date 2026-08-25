@@ -275,8 +275,21 @@ This problem is out of scope for rung 1. This document records it. Then no perso
 | **3** | **capture of the true machine state (registers, page tables) into a checkpoint** | **✅ complete** |
 | **4** | **continuation of 1 simple process after a hard reset** | **✅ complete** |
 | **5** | **an I/O journal at the boundary (§8)** | **✅ complete** |
+| **6** | **replication across machines** | **◐ safety proven, liveness not attempted** |
 
-Every rung is complete. Each rung has value alone.
+Rungs 1 to 5 are complete. Each rung has value alone.
+
+Rung 6 is different, and the table says so. Its safety properties are proven:
+1 generation has 1 checkpoint, and a committed checkpoint reaches each later quorum.
+Its liveness is **not attempted**. A partition stops progress for as long as it
+lasts, and a proof of progress needs a model of partial synchrony. For 1 machine,
+liveness is a question of speed. For a cluster it is half the design, thus rung 6
+does not get a mark of completion.
+
+Rung 6 also changes the failure model. Each rung below it rests on a promise about
+1 device: A1 and A2 describe the behaviour of a single store when power fails.
+A partition is not a fault that any of those axioms describes. See
+`docs/design/0002-what-was-proven.md` §13.
 
 ---
 
