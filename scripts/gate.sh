@@ -119,6 +119,11 @@ gate multi-byte-cells an_atomic_cell_lands_whole \
   "A1 dropped: a cell wider than the atomic write unit. A crash can leave it
    holding a mixture, which no point of the abstract lattice describes."
 
+gate half-quorums quorums_intersect \
+  "Exactly half a cluster accepted as a quorum. Two disjoint halves of an even
+   cluster are then both quorums and share no node, so two different
+   checkpoints can commit at one generation."
+
 echo
 if [ $status -eq 0 ]; then
   echo "all gates passed"

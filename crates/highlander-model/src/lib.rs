@@ -14,5 +14,6 @@ pub mod machine;
 pub mod process;
 pub mod protocol;
 pub mod refine;
+pub mod replication;
 pub mod sequence;
 pub mod theorem;

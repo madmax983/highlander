@@ -731,3 +731,136 @@ fn n_slots_keep_n_generations() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Replication
+// ---------------------------------------------------------------------------
+
+use highlander_ref::{Cluster, ClusterState, NodeId, committed, holds};
+
+fn cluster(n: u64) -> Cluster {
+    Cluster {
+        nodes: (0..n).collect(),
+    }
+}
+
+/// **The fact everything rests on: two majorities share a node.**
+///
+/// `replication::quorums_intersect` proves it by counting. Here it is checked
+/// exhaustively for clusters of 1 to 7 nodes — every pair of quorums, both parities.
+#[test]
+fn every_two_majorities_share_a_node() {
+    for n in 1u64..=7 {
+        let c = cluster(n);
+        let qs = c.quorums(true);
+        assert!(!qs.is_empty(), "a cluster of {n} has at least one majority");
+        for a in &qs {
+            for b in &qs {
+                assert!(
+                    a.intersection(b).next().is_some(),
+                    "cluster of {n}: {a:?} and {b:?} are disjoint majorities",
+                );
+            }
+        }
+    }
+}
+
+/// **Split brain: what exactly half costs.**
+///
+/// The executable form of the eighth gate. In a 4-node cluster, `{0,1}` and `{2,3}`
+/// are both "quorums" once exactly half is accepted. They share no node, so each can
+/// commit a different checkpoint at generation 6 — and both are committed at once.
+///
+/// With a strict majority neither group qualifies, and nothing commits.
+#[test]
+fn half_quorums_permit_two_checkpoints_at_one_generation() {
+    let c = cluster(4);
+
+    let left: Vec<u8> = b"left".to_vec();
+    let right: Vec<u8> = b"right".to_vec();
+    let st: ClusterState = [
+        (0u64, Some((6u64, left.clone()))),
+        (1, Some((6, left.clone()))),
+        (2, Some((6, right.clone()))),
+        (3, Some((6, right.clone()))),
+    ]
+    .into_iter()
+    .collect();
+
+    // The two halves share nothing.
+    let a: BTreeSet<NodeId> = [0, 1].into_iter().collect();
+    let b: BTreeSet<NodeId> = [2, 3].into_iter().collect();
+    assert!(a.intersection(&b).next().is_none());
+
+    // Accepting exactly half: both halves are quorums, and both commit.
+    assert!(c.is_quorum(&a, false) && c.is_quorum(&b, false));
+    assert!(committed(&c, &st, 6, &left, false));
+    assert!(committed(&c, &st, 6, &right, false));
+    assert_ne!(left, right, "two different checkpoints at generation 6");
+
+    // Requiring a strict majority: neither half qualifies, and neither commits.
+    assert!(!c.is_quorum(&a, true) && !c.is_quorum(&b, true));
+    assert!(!committed(&c, &st, 6, &left, true));
+    assert!(!committed(&c, &st, 6, &right, true));
+}
+
+/// **A committed checkpoint reaches every quorum.**
+///
+/// Whatever group assembles next, it holds a node that already has the committed
+/// checkpoint — so a new leader cannot be elected in ignorance of it. This is
+/// `replication::a_committed_checkpoint_reaches_every_quorum`, checked exhaustively.
+#[test]
+fn a_committed_checkpoint_is_visible_to_every_later_quorum() {
+    let c = cluster(5);
+    let image: Vec<u8> = b"gen-6".to_vec();
+
+    // Nodes 0, 1 and 2 hold generation 6. Nodes 3 and 4 are behind.
+    let st: ClusterState = [
+        (0u64, Some((6u64, image.clone()))),
+        (1, Some((6, image.clone()))),
+        (2, Some((6, image.clone()))),
+        (3, Some((5, b"gen-5".to_vec()))),
+        (4, None),
+    ]
+    .into_iter()
+    .collect();
+
+    assert!(committed(&c, &st, 6, &image, true));
+
+    for q in c.quorums(true) {
+        assert!(
+            q.iter().any(|nd| holds(&st, *nd, 6, &image)),
+            "quorum {q:?} cannot see the committed checkpoint",
+        );
+    }
+}
+
+/// **A node can be entirely healthy and still wrong about what is live.**
+///
+/// Node 3 holds generation 5. Its store is not torn, rung 1 holds perfectly, and it
+/// is still not the current checkpoint. `protocol::live` cannot answer this question
+/// once replicas exist, which is why replication is not another rung.
+#[test]
+fn a_local_view_can_be_stale() {
+    let c = cluster(5);
+    let newer: Vec<u8> = b"gen-6".to_vec();
+    let st: ClusterState = [
+        (0u64, Some((6u64, newer.clone()))),
+        (1, Some((6, newer.clone()))),
+        (2, Some((6, newer.clone()))),
+        (3, Some((5, b"gen-5".to_vec()))),
+        (4, Some((5, b"gen-5".to_vec()))),
+    ]
+    .into_iter()
+    .collect();
+
+    assert!(committed(&c, &st, 6, &newer, true));
+    assert!(
+        holds(&st, 3, 5, b"gen-5"),
+        "node 3 is healthy and holds generation 5"
+    );
+    assert!(
+        !holds(&st, 3, 6, &newer),
+        "and it has never heard of generation 6"
+    );
+}

@@ -99,6 +99,7 @@ In `highlander-model`, each module uses only the modules above it in this table.
 | `machine`  | rung 3 — registers, memory, and a capture that loses nothing | no |
 | `process`  | rung 4 — a resume, and what the world sees across a crash | no |
 | `io`       | rung 5 — the I/O boundary, and how it absorbs a repeat | no |
+| `replication` | beyond the ladder — quorums, and what a cluster agrees | no |
 | `checkpoint` | rungs 1, 2 and 3 together | no |
 | `refine`   | §6.3 — A1, and the proof that the model matches a real device | no |
 
@@ -171,7 +172,7 @@ you change one version, change the other version also.
 A crash model can be correct in itself and show nothing about a real machine. Three
 gates prevent this condition.
 
-**`make gate` runs 7 negative tests. Each one must fail.**
+**`make gate` runs 8 negative tests. Each one must fail.**
 
 | Feature | Lemma that must fail | Property it protects |
 |---|---|---|
@@ -182,6 +183,7 @@ gates prevent this condition.
 | `ignore-input-journal` | `replay_follows_the_same_trajectory` | a replay needs its inputs |
 | `no-output-dedup` | `a_stale_event_is_dropped` | the boundary absorbs a repeat |
 | `multi-byte-cells` | `an_atomic_cell_lands_whole` | A1: a cell lands whole |
+| `half-quorums` | `quorums_intersect` | 2 majorities share a node |
 
 Without A2, the payload epoch and the seal epoch become 1 epoch. In that epoch this
 crash result is possible: the seal lands, but the payload does not land. This result
@@ -208,6 +210,30 @@ barrier, 63 of 128 landing schedules cause damage to the store. A separate test
 shows that a forgetful `recover` passes the full lattice and still loses each
 committed cell. A third test shows that the snapshot moves away from the start state
 if the copy is absent.
+
+## Beyond the ladder: replication
+
+Each rung rests on a promise about 1 device. A1 and A2 describe the behaviour of a
+single store when power fails. Replication replaces that failure model, thus it is
+not a rung.
+
+On 1 device, `live` is a function of the store: 1 reader examines each slot. Across
+a cluster no node sees each replica, and no node can separate a peer that is slow
+from a peer that is gone. Thus the identity of the live checkpoint becomes a
+question that a group answers together.
+
+One fact gives the answer: **any 2 majorities of a set share a member**
+(`replication::quorums_intersect`). From it:
+
+* `agreement` — 1 generation has 1 checkpoint, whatever a node believes;
+* `a_committed_checkpoint_reaches_every_quorum` — a committed checkpoint is visible
+  to each later group, thus an election cannot lose it.
+
+Those are the safety properties of consensus. **Liveness is not proven, and it is
+the difficult half.** A partition stops progress for as long as it lasts, and a
+proof of progress needs a model of partial synchrony. This module also gives no
+election protocol, no log replication and no change of membership. It states the
+properties a protocol must keep.
 
 ## The ladder
 

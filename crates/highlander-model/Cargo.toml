@@ -46,6 +46,11 @@ no-output-dedup = []
 # `refine::refinement_under_a1` fail to verify. Never enable this outside
 # scripts/gate.sh.
 multi-byte-cells = []
+# The eighth falsifiability gate. Accepts exactly half a cluster as a quorum, so two
+# disjoint halves of an even cluster are both quorums and share no node. This MUST
+# make `replication::quorums_intersect` fail to verify. Never enable this outside
+# scripts/gate.sh.
+half-quorums = []
 
 [package.metadata.verus]
 verify = true

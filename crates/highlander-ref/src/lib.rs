@@ -365,3 +365,69 @@ pub fn restore(lay: &Layout, d: &Store) -> Machine {
         .collect();
     Machine { regs, mem }
 }
+
+// ---------------------------------------------------------------------------
+// Replication across nodes
+// ---------------------------------------------------------------------------
+
+pub type NodeId = u64;
+
+/// The machines holding replicas.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Cluster {
+    pub nodes: BTreeSet<NodeId>,
+}
+
+/// What one node has sealed: a generation and the checkpoint it names.
+pub type NodeState = Option<(u64, Vec<u8>)>;
+pub type ClusterState = BTreeMap<NodeId, NodeState>;
+
+impl Cluster {
+    /// A group large enough to decide.
+    ///
+    /// `strict_majority == false` models the eighth falsifiability gate: exactly
+    /// half is accepted, so two disjoint halves of an even cluster are both quorums
+    /// and share no node.
+    pub fn is_quorum(&self, q: &BTreeSet<NodeId>, strict_majority: bool) -> bool {
+        if !q.is_subset(&self.nodes) {
+            return false;
+        }
+        if strict_majority {
+            2 * q.len() > self.nodes.len()
+        } else {
+            2 * q.len() >= self.nodes.len()
+        }
+    }
+
+    /// Every group that counts as a quorum.
+    pub fn quorums(&self, strict_majority: bool) -> Vec<BTreeSet<NodeId>> {
+        let all: Vec<NodeId> = self.nodes.iter().copied().collect();
+        (0u32..(1u32 << all.len()))
+            .map(|mask| {
+                all.iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, n)| *n)
+                    .collect::<BTreeSet<NodeId>>()
+            })
+            .filter(|q| self.is_quorum(q, strict_majority))
+            .collect()
+    }
+}
+
+pub fn holds(st: &ClusterState, nd: NodeId, generation: u64, image: &[u8]) -> bool {
+    matches!(st.get(&nd), Some(Some((g, i))) if *g == generation && i.as_slice() == image)
+}
+
+/// A checkpoint is committed when a quorum holds it.
+pub fn committed(
+    c: &Cluster,
+    st: &ClusterState,
+    generation: u64,
+    image: &[u8],
+    strict_majority: bool,
+) -> bool {
+    c.quorums(strict_majority)
+        .iter()
+        .any(|q| q.iter().all(|nd| holds(st, *nd, generation, image)))
+}

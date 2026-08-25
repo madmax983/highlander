@@ -1,7 +1,7 @@
 # What the proof contains
 
 **Companion to:** `0001-checkpoint-storage-model.md`
-**Status:** Correct for the complete ladder, on N slots — 112 verified, 0 errors, 7 gates.
+**Status:** Correct for the complete ladder, on N slots, with replication — 116 verified, 0 errors, 8 gates.
 
 The design doc records the intent. This document records the contents of the
 artifact. It includes each place where the work changed the design. Read this
@@ -620,3 +620,76 @@ The reference implementation shows the window in operation:
 - A policy for the choice of target. The theorem needs only that the target is not
   live. A commit to the oldest slot gives the largest window, and the model does not
   require it.
+
+---
+
+## 13. Replication: not another rung
+
+Rungs 1 to 5 make 1 machine survive its own crash. Each axiom below them is a
+promise about **1 device**: A1 and A2 describe the behaviour of a single store when
+power fails. Replication does not extend that model. It replaces the failure model,
+thus it is not a rung, and `docs/design/0001` does not cover it.
+
+### What changes
+
+Below `replication.rs`, `protocol::live` is a function of the store. One reader
+examines each slot and returns an answer, thus `at_most_one_live_slot` is a
+consequence and not an agreement. That is the reason N slots needed no protocol:
+slots on 1 device cannot disagree, because no reader ever sees a subset of them.
+
+Replicas can disagree. A node sees its own store and the peers it can reach, and it
+cannot separate a peer that is slow from a peer that is gone. No node holds the
+complete picture. Thus **which checkpoint is authoritative** stops being a lookup,
+and becomes a question that a group answers together.
+
+`a_local_view_can_be_stale` states the difference. A node holds generation 5, its
+store is not torn, rung 1 holds for it completely, and it is still wrong about which
+checkpoint is live.
+
+### One fact, and everything follows
+
+`quorums_intersect`: any 2 majorities of a set share a member. The proof is
+inclusion-exclusion, `|q1| + |q2| > |nodes| >= |q1 ∪ q2|`, and it uses no protocol
+and no message.
+
+| Lemma | Statement | Name in Raft |
+|---|---|---|
+| `quorums_intersect` | 2 majorities share a node | quorum intersection |
+| `agreement` | 1 generation has 1 checkpoint | state machine safety |
+| `a_committed_checkpoint_reaches_every_quorum` | each later quorum holds a node that has it | leader completeness |
+
+The middle row is the same statement as `at_most_one_live_slot`, obtained a
+different way. On 1 device it follows from reading each slot. Across a cluster no
+reader can do that, thus the property comes from counting instead.
+
+### The obligation the proof does not discharge
+
+`nodes_are_consistent` says a node never seals 2 different checkpoints at 1
+generation. This module assumes it. The writing side must guarantee it, and that is
+the reason a generation number is allocated once and never reused. A3 does the same
+work it has done since rung 1.
+
+### The gate
+
+`--features half-quorums` accepts exactly half a cluster. 2 disjoint halves of an
+even cluster are then both quorums, they share no node, and 2 different checkpoints
+commit at 1 generation. `quorums_intersect` must fail.
+
+The reference implementation shows the fault:
+`half_quorums_permit_two_checkpoints_at_one_generation` builds a cluster of 4 nodes,
+commits `left` on `{0,1}` and `right` on `{2,3}`, and both are committed at
+generation 6. With a strict majority neither group qualifies and nothing commits.
+`every_two_majorities_share_a_node` checks each pair of majorities for clusters of 1
+to 7 nodes.
+
+### What is not proven, and it is the hard half
+
+**Liveness.** A partition stops progress for as long as it lasts, and no safety
+property prevents that. A proof of progress needs a model of partial synchrony, with
+different assumptions and a different structure. Raft spends most of its difficulty
+there — the timeouts, the randomised elections, the retries — and none of that
+appears here.
+
+Also absent: an election protocol, replication of a log, a change of membership, and
+any statement about what a node does with a message. This module proves the safety
+properties a protocol must keep. It does not give a protocol.
