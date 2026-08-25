@@ -2,3 +2,8 @@
 **/*.rs.bk
 .verus-log/
 *.smt2
+
+# macOS
+.DS_Store
+.AppleDouble
+._*

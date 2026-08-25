@@ -5,7 +5,7 @@ members = ["crates/highlander-model", "crates/highlander-ref"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.97"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/markmasterson/highlander"
 
 [workspace.dependencies]

@@ -302,6 +302,10 @@ answer: any 2 majorities of a set share a member.
 
 ---
 
+## License
+
+MIT. See `LICENSE`.
+
 ## Background
 
 KeyKOS and EROS. KeyKOS operated production banking workloads.
