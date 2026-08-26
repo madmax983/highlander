@@ -736,7 +736,7 @@ fn n_slots_keep_n_generations() {
 // Replication
 // ---------------------------------------------------------------------------
 
-use highlander_ref::{Cluster, ClusterState, NodeId, committed, holds};
+use highlander_ref::{Cluster, ClusterState, NodeId, committed, electable, gen_of, holds};
 
 fn cluster(n: u64) -> Cluster {
     Cluster {
@@ -863,4 +863,94 @@ fn a_local_view_can_be_stale() {
         !holds(&st, 3, 6, &newer),
         "and it has never heard of generation 6"
     );
+}
+
+/// **Leader completeness: an electable leader has seen every committed checkpoint.**
+///
+/// `replication::an_electable_leader_has_seen_every_commit` proves it from quorum
+/// intersection. Here it is checked exhaustively: for every cluster state and every
+/// quorum that could elect it, a candidate the up-to-date rule accepts is never
+/// behind a committed generation.
+#[test]
+fn an_electable_leader_is_never_behind_a_commit() {
+    let c = cluster(5);
+    let image: Vec<u8> = b"gen-6".to_vec();
+
+    // Every assignment of {absent, gen 5, gen 6} to five nodes.
+    for bits in 0u32..3u32.pow(5) {
+        let mut st = ClusterState::new();
+        let mut d = bits;
+        for nd in 0u64..5 {
+            let v = match d % 3 {
+                0 => None,
+                1 => Some((5u64, b"gen-5".to_vec())),
+                _ => Some((6u64, image.clone())),
+            };
+            st.insert(nd, v);
+            d /= 3;
+        }
+
+        if !committed(&c, &st, 6, &image, true) {
+            continue;
+        }
+        for cand in 0u64..5 {
+            for q in c.quorums(true) {
+                if electable(&c, &st, cand, &q, true, true) {
+                    assert!(
+                        gen_of(&st, cand) >= 6,
+                        "state {st:?}: node {cand} is electable by {q:?} but behind generation 6",
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// **What the up-to-date rule prevents.**
+///
+/// The executable form of the ninth gate. Generation 6 is committed by `{1,2,3}`.
+/// Node 0 never received it. The group `{0,3,4}` is a perfectly good quorum and
+/// contains node 0, so counting votes alone elects a leader that has never seen
+/// generation 6 — and its next commit erases it.
+#[test]
+fn without_the_up_to_date_rule_a_stale_node_can_lead() {
+    let c = cluster(5);
+    let newer: Vec<u8> = b"gen-6".to_vec();
+    let older: Vec<u8> = b"gen-5".to_vec();
+    let st: ClusterState = [
+        (0u64, Some((5u64, older.clone()))),
+        (1, Some((6, newer.clone()))),
+        (2, Some((6, newer.clone()))),
+        (3, Some((6, newer.clone()))),
+        (4, Some((5, older.clone()))),
+    ]
+    .into_iter()
+    .collect();
+
+    assert!(
+        committed(&c, &st, 6, &newer, true),
+        "generation 6 is committed"
+    );
+    assert_eq!(gen_of(&st, 0), 5, "node 0 never received it");
+
+    let q: BTreeSet<NodeId> = [0, 3, 4].into_iter().collect();
+    assert!(
+        c.is_quorum(&q, true),
+        "and {q:?} is a perfectly good quorum"
+    );
+
+    // Counting votes alone: node 0 leads, and generation 6 is lost.
+    assert!(electable(&c, &st, 0, &q, true, false));
+
+    // With the rule: node 3 is in that quorum and is ahead, so node 0 is refused.
+    assert!(!electable(&c, &st, 0, &q, true, true));
+
+    // And nobody behind generation 6 is electable by any quorum at all.
+    for cand in 0u64..5 {
+        for q in c.quorums(true) {
+            if electable(&c, &st, cand, &q, true, true) {
+                assert!(gen_of(&st, cand) >= 6);
+            }
+        }
+    }
 }

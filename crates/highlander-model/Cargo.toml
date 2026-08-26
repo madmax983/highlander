@@ -51,6 +51,11 @@ multi-byte-cells = []
 # make `replication::quorums_intersect` fail to verify. Never enable this outside
 # scripts/gate.sh.
 half-quorums = []
+# The ninth falsifiability gate. Drops the rule that a voter never elects a candidate
+# behind it, so a node that missed a committed checkpoint can lead and then erase it.
+# This MUST make `replication::an_electable_leader_has_seen_every_commit` fail to
+# verify. Never enable this outside scripts/gate.sh.
+elect-any-node = []
 
 [package.metadata.verus]
 verify = true

@@ -33,15 +33,21 @@ enclosing_fn() {
   ' "$1"
 }
 
-# gate <feature> <lemma> <why it matters>
+# gate <feature> <module> <lemma> <why it matters>
+#
+# Uses `cargo verus focus --verify-module`, which checks only the module holding the
+# target lemma. That is roughly 17 proofs rather than 119, and it makes the check
+# tighter rather than looser: the gate asserts that THIS lemma breaks, and whether
+# anything else also breaks is not what it tests. `make verify` covers the crate.
 gate() {
-  local feature="$1" lemma="$2" why="$3"
+  local feature="$1" module="$2" lemma="$3" why="$4"
   echo
-  echo "── gate: --features $feature"
+  echo "── gate: --features $feature  (module $module)"
   echo "   $why"
 
   local out rc
-  out=$(cargo verus verify -p highlander-model --features "$feature" 2>&1)
+  out=$(cargo verus focus -p highlander-model --features "$feature" \
+        -- --verify-module "$module" 2>&1)
   rc=$?
 
   fail() {
@@ -91,38 +97,42 @@ gate() {
   echo "$out" | grep -E 'verification results' | sed 's/^/   /' || true
 }
 
-gate no-barrier commit_establishes_shape \
+gate no-barrier commit commit_establishes_shape \
   "Without A2 the payload and seal merge into one epoch, which admits the
    outcome 'seal landed, payload did not'. That recovers to neither generation."
 
-gate degenerate-recover commit_is_durable \
+gate degenerate-recover commit commit_is_durable \
   "A checkpoint that forgets everything never tears, so it satisfies every
    crash-consistency lemma. Only durability rejects it."
 
-gate no-cow-copy copy_preserves_visible \
+gate no-cow-copy cow copy_preserves_visible \
   "Copy-on-write without the copy. The snapshot follows the machine instead of
    holding still, so the checkpoint mixes two instants of memory."
 
-gate overlapping-layout capture_preserves_memory_at \
+gate overlapping-layout machine capture_preserves_memory_at \
   "A layout where the register file and memory share a cell. One overwrites the
    other, and the capture loses state without a trace."
 
-gate ignore-input-journal replay_follows_the_same_trajectory \
+gate ignore-input-journal process replay_follows_the_same_trajectory \
   "A replay that is not given the inputs it had before. The machine follows a
    different trajectory, so the resumed process is not the one that crashed."
 
-gate no-output-dedup a_stale_event_is_dropped \
+gate no-output-dedup io a_stale_event_is_dropped \
   "An I/O boundary that accepts everything. The window repeated after a crash
    reaches the world a second time, so §8 is unbounded again."
 
-gate multi-byte-cells an_atomic_cell_lands_whole \
+gate multi-byte-cells refine an_atomic_cell_lands_whole \
   "A1 dropped: a cell wider than the atomic write unit. A crash can leave it
    holding a mixture, which no point of the abstract lattice describes."
 
-gate half-quorums quorums_intersect \
+gate half-quorums replication quorums_intersect \
   "Exactly half a cluster accepted as a quorum. Two disjoint halves of an even
    cluster are then both quorums and share no node, so two different
    checkpoints can commit at one generation."
+
+gate elect-any-node replication an_electable_leader_has_seen_every_commit \
+  "An election that ignores how far behind a candidate is. A node that missed a
+   committed checkpoint can lead, and its next commit erases that checkpoint."
 
 echo
 if [ $status -eq 0 ]; then

@@ -122,6 +122,7 @@ select an older checkpoint. See §5a of `docs/design/0002-what-was-proven.md`.
 | Any 2 majorities of a cluster share a node | `replication::quorums_intersect` | 6 |
 | 1 generation has 1 checkpoint | `replication::agreement` | 6 |
 | A committed checkpoint reaches each later quorum | `replication::a_committed_checkpoint_reaches_every_quorum` | 6 |
+| A leader is never behind a committed checkpoint | `replication::an_electable_leader_has_seen_every_commit` | 6 |
 
 ### What the proof does not contain
 
@@ -153,7 +154,7 @@ used the CRC would change a proven result into a probabilistic one.
 A model of this size can be internally consistent and describe nothing. Each gate
 removes 1 thing the design says is essential, and requires the proof to notice.
 
-**`make gate` runs 8 negative tests. Each one must fail to verify.**
+**`make gate` runs 9 negative tests. Each one must fail to verify.**
 
 | Feature | Lemma that must fail | What it protects |
 |---|---|---|
@@ -165,6 +166,7 @@ removes 1 thing the design says is essential, and requires the proof to notice.
 | `no-output-dedup` | `a_stale_event_is_dropped` | the boundary absorbs a repeat |
 | `multi-byte-cells` | `an_atomic_cell_lands_whole` | A1: a cell lands whole |
 | `half-quorums` | `quorums_intersect` | 2 majorities share a node |
+| `elect-any-node` | `an_electable_leader_has_seen_every_commit` | a leader is not behind a commit |
 
 Each gate tests 3 conditions, and not 1: verification fails, the failure lands inside
 the named lemma, and it is a proof failure and not a compile error. A negative test
@@ -229,7 +231,7 @@ A standard Rust toolchain is enough for all targets except `make verify` and
 make test     # property tests against the reference implementation
 make check    # cargo build and clippy: the model is also usual Rust 2024
 make verify   # the proof                       (Verus necessary)
-make gate     # the 8 falsifiability gates      (Verus necessary)
+make gate     # the 9 falsifiability gates      (Verus necessary)
 make          # all 4 targets
 ```
 

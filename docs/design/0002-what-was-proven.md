@@ -117,6 +117,13 @@ does not fire when the gate removes its condition. `copy_preserves_visible`,
 `an_atomic_cell_lands_whole` all have this shape, and each one states its property
 in a single line.
 
+The third change was to the cost. 9 gates, each a verification of the full crate,
+took about 2 minutes. Each gate now uses `cargo verus focus --verify-module` and
+checks only the module that holds its target lemma, which is about 17 proofs and not
+119. This makes a gate **more** exact: a gate asserts that 1 named lemma breaks, and
+whether some other lemma also breaks is not the question. `make verify` covers the
+crate.
+
 The second correction was to `gate.sh` itself. The script matched the name of the
 lemma against the output of Verus, and Verus does not always show enough context to
 include a signature of several lines. The script now reads the position of each
@@ -664,11 +671,50 @@ and no message.
 |---|---|---|
 | `quorums_intersect` | 2 majorities share a node | quorum intersection |
 | `agreement` | 1 generation has 1 checkpoint | state machine safety |
-| `a_committed_checkpoint_reaches_every_quorum` | each later quorum holds a node that has it | leader completeness |
+| `a_committed_checkpoint_reaches_every_quorum` | each later quorum holds a node that has it | the ingredient of leader completeness |
+| `an_electable_leader_has_seen_every_commit` | a leader is never behind a committed checkpoint | leader completeness |
 
 The middle row is the same statement as `at_most_one_live_slot`, obtained a
 different way. On 1 device it follows from reading each slot. Across a cluster no
 reader can do that, thus the property comes from counting instead.
+
+### Across generations: what an election must not lose
+
+`agreement` covers 1 generation. It says nothing about a later one, and the space
+between generations is where the difficult fault of a consensus protocol lives.
+
+The fault: generation 6 is committed by a quorum. A node that never received it is
+elected leader. Its next commit is derived from generation 5, thus generation 6 is
+erased although a quorum had accepted it. A commit that a majority accepted is not
+final, and each guarantee above becomes worth nothing.
+
+The correction is 1 clause in the rule for an election. A voter does not elect a
+candidate that is behind it:
+
+```rust
+pub open spec fn electable(c, st, cand, q) -> bool {
+    &&& is_quorum(c, q)
+    &&& forall|nd| q.contains(nd) ==> gen_of(st, nd) <= gen_of(st, cand)
+}
+```
+
+`an_electable_leader_has_seen_every_commit` shows the clause is sufficient. The
+quorum that votes and the quorum that committed share a node. That node holds the
+committed generation, and no voter is ahead of the candidate, thus the candidate is
+at least as far along as the commit. It cannot lead without knowledge of it.
+
+`the_up_to_date_rule_rejects_a_stale_candidate` shows the clause is necessary. 5
+nodes, generation 6 committed by `{1,2,3}`, and node 0 still at generation 5. The
+group `{0,3,4}` is a correct quorum and it contains node 0. A rule that counted only
+votes would elect node 0. The rule refuses, because node 3 is in that quorum and
+node 3 is ahead.
+
+`--features elect-any-node` removes the clause, and
+`an_electable_leader_has_seen_every_commit` must then fail.
+
+**This is 1 line of a specification and it is the whole of leader completeness.**
+Raft states it as "vote only for a candidate at least as up to date as you". The
+proof shows that the line, and quorum intersection, are together sufficient.
 
 ### The obligation the proof does not discharge
 

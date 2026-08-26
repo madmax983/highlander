@@ -258,4 +258,151 @@ pub proof fn a_local_view_can_be_stale(older: Delta<CellVal>, newer: Delta<CellV
     (c, st)
 }
 
+// ---------------------------------------------------------------------------
+// Across generations: what an election must not lose
+// ---------------------------------------------------------------------------
+
+/// The generation a node has sealed. `-1` means it has sealed nothing, which ranks
+/// below every real generation — the same convention `protocol::gen_below` uses for
+/// an absent seal.
+pub open spec fn gen_of(st: ClusterState, nd: NodeId) -> int {
+    if st.dom().contains(nd) {
+        match st[nd] {
+            Some((g, _)) => g as int,
+            None => -1,
+        }
+    } else {
+        -1
+    }
+}
+
+pub proof fn holding_fixes_the_generation(
+    st: ClusterState,
+    nd: NodeId,
+    generation: nat,
+    image: Delta<CellVal>,
+)
+    requires
+        holds(st, nd, generation, image),
+    ensures
+        gen_of(st, nd) == generation as int,
+{
+}
+
+/// A candidate may lead when a quorum votes for it **and no voter is ahead of it**.
+///
+/// The second clause is the whole of leader completeness. Raft states it as "vote
+/// only for a candidate at least as up to date as you", and without it a node that
+/// missed a commit can be elected and then overwrite it.
+#[cfg(not(feature = "elect-any-node"))]
+pub open spec fn electable(
+    c: Cluster,
+    st: ClusterState,
+    cand: NodeId,
+    q: Set<NodeId>,
+) -> bool {
+    &&& is_quorum(c, q)
+    &&& forall|nd: NodeId| #![auto] q.contains(nd) ==> gen_of(st, nd) <= gen_of(st, cand)
+}
+
+/// **The ninth falsifiability gate (`--features elect-any-node`).**
+///
+/// Drops the up-to-date rule, so a quorum may elect any candidate. A node that
+/// missed a committed checkpoint can then lead, and the next commit it makes is
+/// derived from a state older than one already committed — the committed checkpoint
+/// is lost. `an_electable_leader_has_seen_every_commit` must fail with this feature
+/// on.
+#[cfg(feature = "elect-any-node")]
+pub open spec fn electable(
+    c: Cluster,
+    st: ClusterState,
+    cand: NodeId,
+    q: Set<NodeId>,
+) -> bool {
+    is_quorum(c, q)
+}
+
+/// **Leader completeness: an electable leader has seen every committed checkpoint.**
+///
+/// The voting quorum and the committing quorum share a node. That node holds the
+/// committed generation, and no voter is ahead of the candidate, so the candidate is
+/// at least as far along as the commit. It cannot lead in ignorance of it.
+///
+/// This is the property that makes a commit *final*. `agreement` says one generation
+/// has one checkpoint; this says a later leader cannot quietly discard it.
+pub proof fn an_electable_leader_has_seen_every_commit(
+    c: Cluster,
+    st: ClusterState,
+    cand: NodeId,
+    q: Set<NodeId>,
+    generation: nat,
+    image: Delta<CellVal>,
+)
+    requires
+        electable(c, st, cand, q),
+        committed(c, st, generation, image),
+    ensures
+        gen_of(st, cand) >= generation as int,
+{
+    let qc = choose|x: Set<NodeId>|
+        is_quorum(c, x) && forall|nd: NodeId| x.contains(nd) ==> holds(st, nd, generation, image);
+    let nd = quorums_intersect(c, qc, q);
+    assert(holds(st, nd, generation, image));
+    holding_fixes_the_generation(st, nd, generation, image);
+    assert(gen_of(st, nd) <= gen_of(st, cand));
+}
+
+/// **What the up-to-date rule is for.**
+///
+/// 5 nodes. Generation 6 is committed by `{1,2,3}`. Node 0 never received it and
+/// still holds generation 5. The group `{0,3,4}` is a perfectly good quorum, and it
+/// contains node 0 — so a rule that only counted votes would elect a leader that had
+/// never seen generation 6, and its next commit would erase it.
+///
+/// The up-to-date rule rejects node 0, because node 3 is in that quorum and node 3
+/// is ahead of it. The counterexample is why the rule exists, and the last clause is
+/// what the `elect-any-node` gate removes.
+pub proof fn the_up_to_date_rule_rejects_a_stale_candidate(
+    older: Delta<CellVal>,
+    newer: Delta<CellVal>,
+) -> (r: (Cluster, ClusterState, Set<NodeId>))
+    ensures
+        committed(r.0, r.1, 6, newer),
+        is_quorum(r.0, r.2),
+        r.2.contains(0),
+        gen_of(r.1, 0) < 6,
+        !electable(r.0, r.1, 0, r.2),
+{
+    let c = Cluster { nodes: set![0nat, 1nat, 2nat, 3nat, 4nat] };
+    let st: ClusterState = map![
+        0nat => Some((5nat, older)),
+        1nat => Some((6nat, newer)),
+        2nat => Some((6nat, newer)),
+        3nat => Some((6nat, newer)),
+        4nat => Some((5nat, older))
+    ];
+
+    assert(c.nodes.len() == 5);
+
+    // Generation 6 is committed: nodes 1, 2 and 3 are a majority and all hold it.
+    let qc = set![1nat, 2nat, 3nat];
+    assert(qc.len() == 3);
+    assert(is_quorum(c, qc));
+    assert(forall|nd: NodeId| qc.contains(nd) ==> holds(st, nd, 6nat, newer));
+    assert(committed(c, st, 6nat, newer));
+
+    // And this quorum would have elected node 0, had votes been all that counted.
+    let q = set![0nat, 3nat, 4nat];
+    assert(q.len() == 3);
+    assert(is_quorum(c, q));
+    assert(gen_of(st, 0) == 5);
+    assert(gen_of(st, 3) == 6);
+
+    // Node 3 is in that quorum and is ahead of node 0, so the rule refuses.
+    assert(q.contains(3nat));
+    assert(!(gen_of(st, 3nat) <= gen_of(st, 0nat)));
+    assert(!electable(c, st, 0, q));
+    (c, st, q)
+}
+
 } // verus!

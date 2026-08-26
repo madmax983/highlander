@@ -431,3 +431,32 @@ pub fn committed(
         .iter()
         .any(|q| q.iter().all(|nd| holds(st, *nd, generation, image)))
 }
+
+/// The generation a node has sealed. `-1` means it has sealed nothing.
+pub fn gen_of(st: &ClusterState, nd: NodeId) -> i64 {
+    match st.get(&nd) {
+        Some(Some((g, _))) => *g as i64,
+        _ => -1,
+    }
+}
+
+/// A candidate may lead when a quorum votes for it and no voter is ahead of it.
+///
+/// `up_to_date_rule == false` models the ninth falsifiability gate: votes alone
+/// decide, so a node that missed a committed checkpoint can lead and then erase it.
+pub fn electable(
+    c: &Cluster,
+    st: &ClusterState,
+    cand: NodeId,
+    q: &BTreeSet<NodeId>,
+    strict_majority: bool,
+    up_to_date_rule: bool,
+) -> bool {
+    if !c.is_quorum(q, strict_majority) {
+        return false;
+    }
+    if !up_to_date_rule {
+        return true;
+    }
+    q.iter().all(|nd| gen_of(st, *nd) <= gen_of(st, cand))
+}

@@ -98,7 +98,7 @@ Read the text again and check three things:
 
 ## Proof work
 
-Six invariants hold this development together. Do not break one of them without a
+Seven invariants hold this development together. Do not break one of them without a
 record of the change.
 
 - **`algebra::dunion_comm` must fail to verify if you remove its `disjoint`
@@ -118,9 +118,31 @@ record of the change.
 - **`scripts/gate.sh` must also fail with `--features overlapping-layout`.** The
   failure must occur at `capture_preserves_memory_at`. The register file and memory
   must not share a cell. See `docs/design/0002` §11.
+- **`scripts/gate.sh` must also fail with `--features elect-any-node`.** The failure
+  must occur at `an_electable_leader_has_seen_every_commit`. A voter must not elect a
+  candidate that is behind it. Without that rule a node that missed a committed
+  checkpoint can lead, and its next commit erases the checkpoint. See
+  `docs/design/0002` §13.
 - **Do not put `clean` back into a commit precondition.** `clean` holds only for a
   new store. A commit leaves the older checkpoint in the other slot, thus a store is
   never clean again. Use `protocol::steady`. See `docs/design/0002` §5a.
 
-Run `make` before you commit. It runs the proof, the gate, the property tests and
+Run `make` before you commit. It runs the proof, the gates, the property tests and
 clippy.
+
+`make verify` takes about 12 seconds and checks each of the 119 proofs. `make gate`
+runs 9 negative tests, and each one uses `cargo verus focus --verify-module` to check
+only the module that holds its target lemma. A gate asserts that 1 named lemma
+breaks, thus a smaller scope makes the test more exact and not less. `make verify`
+covers the crate.
+
+### How to add a gate
+
+1. Add a cargo feature that removes 1 condition the design says is necessary.
+2. State the property as a lemma of 1 line. Give it an **empty proof body**, or a
+   **guarded** hint that does not fire when the feature removes its condition. A
+   failure inside a long proof is still a correct failure, but a lemma of 1 line
+   says what broke.
+3. Add a `gate` line to `scripts/gate.sh` with the feature, the module and the lemma.
+4. Run `make gate`. The script requires 3 conditions: verification fails, the failure
+   is inside the named lemma, and it is a proof failure and not a compile error.
